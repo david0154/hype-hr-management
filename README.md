@@ -1,7 +1,7 @@
 # 🏢 Hype HR Management System
 
 <p align="center">
-  <img src="assets/logo.png" alt="Hype HR Management Logo" width="180"/>
+  <img src="logo.png" alt="Hype HR Management Logo" width="180"/>
 </p>
 
 <p align="center">
