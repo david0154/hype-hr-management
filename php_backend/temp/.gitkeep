@@ -1,0 +1,3 @@
+# This directory stores temporary PDF files during generation.
+# Files are deleted immediately after upload to Firebase Storage.
+# Do not commit real PDF files here.

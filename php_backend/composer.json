@@ -1,0 +1,26 @@
+{
+  "name": "nexuzylab/hype-hr-php-backend",
+  "description": "Hype HR Management — PHP backend for automated salary slip generation and email dispatch",
+  "type": "project",
+  "require": {
+    "php": ">=8.0",
+    "phpmailer/phpmailer": "^6.9",
+    "setasign/fpdf": "^1.8"
+  },
+  "autoload": {
+    "psr-4": { "HypeHR\\": "src/" }
+  },
+  "authors": [
+    {
+      "name": "David",
+      "homepage": "https://github.com/david0154",
+      "role": "Developer"
+    },
+    {
+      "name": "Nexuzy Lab",
+      "email": "nexuzylab@gmail.com",
+      "role": "Management"
+    }
+  ],
+  "license": "MIT"
+}
