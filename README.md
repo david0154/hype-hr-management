@@ -1,4 +1,4 @@
-# \ud83c\udfe2 Hype HR Management System
+# 🏢 Hype HR Management System
 
 <p align="center">
   <img src="logo.png" alt="Hype HR Management Logo" width="180"/>
@@ -20,20 +20,20 @@
 
 ---
 
-## \ud83e\udde0 Overview
+## 🧠 Overview
 
 **Hype HR Management** is a complete HR + Attendance + Payroll SaaS system for small and medium businesses:
 
 | Layer | Technology |
 |---|---|
-| \ud83d\udda5\ufe0f Windows Admin App | Python 3.x, Tkinter, Firebase Admin SDK |
-| \ud83d\udcf1 Android App | Kotlin, Firebase SDK, ML Kit QR Scanner |
-| \u2601\ufe0f Cloud Backend | Firebase Auth, Firestore, Storage, Cloud Functions |
-| \ud83d\udc18 PHP Automation | PHP 8.x, PHPMailer, FPDF, vlucas/phpdotenv |
+| 🖥️ Windows Admin App | Python 3.x, Tkinter, Firebase Admin SDK |
+| 📱 Android App | Kotlin, Firebase SDK, ML Kit QR Scanner |
+| ☁️ Cloud Backend | Firebase Auth, Firestore, Storage, Cloud Functions |
+| 🐘 PHP Automation | PHP 8.x, PHPMailer, FPDF, vlucas/phpdotenv |
 
 ---
 
-## \ud83e\udde0 Architecture
+## 🧠 Architecture
 
 ```
 Admin Tkinter App (Role-Based: HR / CA / Manager / Admin)
@@ -46,21 +46,21 @@ Firebase Backend
    +-- Storage (Salary Slip PDFs, 1-yr retention)
           |
           v
-Android App                    PHP Cron (1st of every month)
+Android App                    PHP Cron (1st of every month, 00:05 IST)
    |-- Employee Mode         <-- 1. Fetch attendance from Firestore
    |-- Security/Supervisor      2. Apply duty/OT/Sunday rules
        Mode (QR scanner         3. Calculate salary
        for employees            4. Generate branded PDF
        without phones)          5. Upload to Firebase Storage
                                 6. Save salary record to Firestore
-                                7. Email employee (if mail set + SMTP)
-                                8. SMS alert (optional: Fast2SMS/MSG91/Twilio)
-                                9. Cleanup slips older than 12 months
+                                7. Email employee (if email set + SMTP configured)
+                                8. SMS alert (optional: Fast2SMS / MSG91 / Twilio)
+                                9. Auto-cleanup slips older than 12 months
 ```
 
 ---
 
-## \ud83d\udcc1 Project Structure
+## 📁 Project Structure
 
 ```
 hype-hr-management/
@@ -88,7 +88,9 @@ hype-hr-management/
 |       |-- ui/employee/         # Dashboard, history, salary list
 |       |-- ui/security/         # Security/Supervisor QR scan mode
 |       |-- data/firebase/       # Firestore + Storage helpers
-|       +-- utils/               # QR scanner, salary auto-trigger
+|       |-- utils/               # QR scanner, SalaryCalculator, SessionManager
+|       |-- util/                # PdfUploader (legacy; SalaryCalculator here is deprecated — use utils/)
+|       +-- workers/             # WorkManager: SalarySlipAutoGenerateWorker
 |
 |-- php_backend/                 # PHP Automation Backend
 |   |-- config.php               # Constants + .env loader
@@ -109,84 +111,90 @@ hype-hr-management/
 
 ---
 
-## \u23f1\ufe0f Attendance Rules (12-Hour Workday)
+## ⏱️ Attendance Rules (12-Hour Workday)
 
-### Duty Session (First IN\u2192OUT of the day)
+### Duty Session (First IN→OUT of the day)
 
 | Hours Worked | Status |
 |---|---|
-| < 4 hrs | Absent (0 pay) |
-| 4 \u2013 6.59 hrs | Half Day (0.5 pay) |
-| \u2265 7 hrs | Full Day (1.0 pay) |
+| < 4 hrs | **Absent** (0 pay) |
+| 4 – 6.59 hrs | **Half Day** (0.5 pay) |
+| ≥ 7 hrs | **Full Day** (1.0 pay) |
 
-### OT Session (Second IN\u2192OUT same day)
+### OT Session (Second IN→OUT same day)
 
 | Hours Worked | OT Credited |
 |---|---|
 | < 4 hrs | No OT |
-| 4 \u2013 6.59 hrs | Half OT (4 hrs credited) |
-| \u2265 7 hrs | Full OT (actual hours credited) |
+| 4 – 6.59 hrs | **Half OT** — 4 hrs credited |
+| ≥ 7 hrs | **Full OT** — actual hours credited |
 
-### Sunday Rule
+### ⚠️ Sunday Rule (Important — read carefully)
 
 | Saturday Present | Monday Present | Sunday Pay |
 |---|---|---|
-| \u2714\ufe0f Yes | \u2714\ufe0f Yes | Full Pay (1.0) |
-| \u2714\ufe0f Yes | \u274c No | Half Pay (0.5) |
-| \u274c No | \u274c No | No Pay (0) |
+| ✔️ Yes | ✔️ Yes | **Full Pay** (1.0 day) |
+| ✔️ Yes | ❌ No | **Half Pay** (0.5 day) |
+| ❌ No | any | **No Pay** (0) |
+
+> **Rule:** Only Saturday attendance gates the Sunday holiday bonus.
+> Monday-only presence does **NOT** grant Sunday pay.
+> Both PHP backend (`firebase_api.php`) and Android worker (`SalarySlipAutoGenerateWorker.kt`) implement this correctly.
 
 ---
 
-## \ud83d\udcb0 Salary Formula
+## 💰 Salary Formula
 
 ```
-Final Salary = (Base Salary x Attendance Ratio)
+Final Salary = (Base Salary × Attendance Ratio)
              + OT Pay
              + Bonus
-             - Deduction
-             - Advance
+             − Deduction
+             − Advance
 
-Attendance Ratio = (Full Days + Half Days x 0.5 + Paid Sundays) / Working Days
-OT Pay           = OT Hours x (Base / Working Days / 12) x OT Multiplier (1.5x)
+Attendance Ratio = (Full Days + Half Days×0.5 + Paid Sundays) ÷ Monthly Working Days
+OT Pay           = OT Hours × (Base ÷ Working Days ÷ 12) × OT Multiplier (default 1.5×)
 ```
+
+> Working day = **12 hours**. OT hourly rate = Base ÷ Working Days ÷ 12.
 
 ---
 
-## \ud83e\udde7 Salary Slip Format
+## 🧾 Salary Slip Format
 
 ```
-====================================
-         HYPE PVT LTD
-   123 Business Park, Kolkata
-   Email: hr@hype.com | Ph: XXXXXXXXXX
-====================================
-        SALARY SLIP
-Employee: Rahul Das         EMP-0001
-Month   : April 2026
-------------------------------------
+============================================================
+               HYPE PVT LTD
+        123 Business Park, Kolkata, West Bengal
+        Email: hr@hype.com  |  Ph: +91 XXXXXXXXXX
+============================================================
+                    SALARY SLIP
+Employee : Rahul Das                     ID: EMP-0001
+Month    : April 2026
+------------------------------------------------------------
 Present Days    : 22
 Half Days       : 2
 Absent Days     : 4
-Paid Holidays   : 4 (Sunday rule)
+Paid Holidays   : 4   (Sunday rule — Sat+Mon present)
 OT Hours        : 18 hrs
-------------------------------------
-Base Salary     :  15,000
-Attendance Sal  :  14,000
-Overtime Pay    :   3,000
-Bonus           :   1,000
-Deduction       :    -500
-Advance         :       0
-------------------------------------
-FINAL SALARY    :  17,500
+------------------------------------------------------------
+Base Salary     :  ₹ 15,000
+Attendance Sal  :  ₹ 14,000
+Overtime Pay    :  ₹  3,000
+Bonus           :  ₹  1,000
+Deduction       : −₹    500
+Advance         :  ₹      0
+------------------------------------------------------------
+FINAL SALARY    :  ₹ 17,500
 Payment Mode    : CASH
-------------------------------------
-           Authorized Signature
-====================================
+------------------------------------------------------------
+                   Authorized Signature
+============================================================
 ```
 
 ---
 
-## \ud83d\ude80 PHP Backend Setup
+## 🚀 PHP Backend Setup
 
 ### Requirements
 - PHP >= 7.4 (PHP 8.x recommended)
@@ -200,14 +208,14 @@ Payment Mode    : CASH
 https://yoursite.com/hype-hr/install.php
 ```
 
-Fill in Firebase Project ID, API Key, SMTP settings, and optional SMS provider. The installer writes your `.env` file automatically.
+Fill in Firebase Project ID, Service Account JSON path, SMTP settings, and optional SMS provider. The installer writes your `.env` file automatically.
 
-> \u26a0\ufe0f **Delete `install.php` immediately after installation!**
+> ⚠️ **Delete `install.php` immediately after installation!**
 
 ### 2. Manual Install
 
 ```bash
-# 1. Clone and go to php_backend/
+# 1. Go to php_backend/
 cd php_backend/
 
 # 2. Copy .env template and fill in your values
@@ -218,10 +226,10 @@ nano .env
 composer install
 
 # 4. Upload your Firebase service account JSON
-# Get it from Firebase Console -> Project Settings -> Service Accounts
-# Upload as: php_backend/firebase-service-account.json
+# Firebase Console → Project Settings → Service Accounts → Generate new private key
+# Save as: php_backend/firebase-service-account.json
 
-# 5. Set file permissions
+# 5. Set correct file permissions
 chmod 755 temp/
 chmod 644 .env
 chmod 600 firebase-service-account.json
@@ -238,7 +246,7 @@ Add to server crontab (`crontab -e`):
 
 ### 4. Configure SMTP in Firestore
 
-Create a Firestore document at `settings/smtp`:
+Create document at `settings/smtp` in Firestore:
 
 ```json
 {
@@ -255,20 +263,20 @@ Create a Firestore document at `settings/smtp`:
 
 ---
 
-## \ud83d\udce7 Email + \ud83d\udcf1 SMS Notifications
+## 📧 Email + 📱 SMS Notifications
 
 ### Email (PHPMailer + SMTP)
 - Auto-sent on the 1st of every month after salary slip generation
 - Salary slip attached as PDF
 - HTML email with full attendance + salary breakdown
-- Only sent if employee has an email address in their profile
+- Only sent if employee has an `email` field in their Firestore profile
 - SMTP configured via Firestore `settings/smtp` or `.env` file
 
-### SMS (Optional \u2014 choose one provider)
+### SMS (Optional — choose one provider)
 
 | Provider | Region | Config Key |
 |---|---|---|
-| **Fast2SMS** | India (recommended) | `SMS_API_KEY` |
+| **Fast2SMS** | India ✅ recommended | `SMS_API_KEY` |
 | **MSG91** | India | `SMS_API_KEY` + `SMS_SENDER_ID` |
 | **Twilio** | International | `SMS_ACCOUNT_SID` + `SMS_AUTH_TOKEN` |
 
@@ -281,70 +289,70 @@ SMS_API_KEY=your_api_key
 
 ---
 
-## \ud83d\uddc4\ufe0f Firebase Data Structure
+## 🗄️ Firebase Data Structure
 
 ```
 Firestore
 |-- employees/{emp_id}
-|   |-- employee_id: "EMP-0001"
-|   |-- name: "Rahul Das"
-|   |-- username: "rahul.hype"
-|   |-- mobile: "9876543210"
-|   |-- email: "rahul@email.com"   # optional
-|   |-- aadhaar: "XXXX-XXXX-XXXX"
-|   |-- salary: 15000
+|   |-- employee_id : "EMP-0001"
+|   |-- name        : "Rahul Das"
+|   |-- username    : "rahul.hype"
+|   |-- mobile      : "9876543210"
+|   |-- email       : "rahul@email.com"   # optional — used for salary slip email
+|   |-- aadhaar     : "XXXX-XXXX-XXXX"
+|   |-- salary      : 15000
 |   |-- payment_mode: "CASH"
-|   |-- is_active: true
-|   +-- company_id: "hype"
+|   |-- is_active   : true
+|   +-- company_id  : "hype"
 |
 |-- attendance_logs/{log_id}
-|   |-- employee_id: "EMP-0001"
-|   |-- timestamp: Timestamp
-|   |-- location: "Gate"
-|   +-- action: "IN" | "OUT"
+|   |-- employee_id : "EMP-0001"
+|   |-- timestamp   : Timestamp
+|   |-- location    : "Gate"
+|   +-- action      : "IN" | "OUT"
 |
 |-- sessions/{session_id}
-|   |-- employee_id: "EMP-0001"
-|   |-- date: "2026-04-06"
-|   |-- duty_hours: 7.5
-|   |-- ot_hours: 4.0
+|   |-- employee_id : "EMP-0001"
+|   |-- date        : "2026-04-06"
+|   |-- duty_hours  : 7.5
+|   |-- ot_hours    : 4.0
 |   +-- session_type: "duty" | "ot"
 |
 |-- salary/{emp_id}_{month_key}
-|   |-- employee_id: "EMP-0001"
-|   |-- month_key: "2026-04"
+|   |-- employee_id : "EMP-0001"
+|   |-- month_key   : "2026-04"
 |   |-- final_salary: 17500
-|   |-- slip_url: "https://storage.googleapis.com/..."
+|   |-- slip_url    : "https://storage.googleapis.com/..."
 |   |-- generated_at: Timestamp
-|   +-- expires_at: Timestamp   # 12 months, auto-cleanup
+|   +-- expires_at  : Timestamp   # 12 months from generation — auto-cleanup
 |
-|-- settings/smtp             # SMTP config (see above)
-|-- settings/company          # Company name, address, logo
-+-- settings/app              # OT multiplier, working days/month
+|-- settings/smtp          # SMTP config (see above)
+|-- settings/company       # Company name, address, email, phone, logo
++-- settings/app           # OT multiplier, working days/month
 ```
 
 ---
 
-## \ud83d\udd10 Security Features
+## 🔐 Security Features
 
 - Unique username format: `name.company` (e.g. `rahul.hype`)
 - Aadhaar validation on employee creation
 - Prevent double QR scan (15-min cooldown per employee per location)
-- Role-based access in Admin App (HR, CA, Manager, Admin)
+- Role-based access in Admin App: **HR**, **CA**, **Manager**, **Admin**
 - API endpoints protected by `API_SECRET` header
 - Service account JSON never exposed to client apps
-- Salary slips auto-expire after 12 months (Storage + Firestore)
+- Salary slips auto-expire and are deleted after 12 months
 
 ---
 
-## \ud83d\udcf1 Android App Features
+## 📱 Android App Features
 
 ### Employee Mode
-- Login: Username + Password \u2192 Set PIN \u2192 Daily PIN login
+- Login: Username + Password → Set PIN → Daily PIN login
 - Dashboard: Present count, absent count, OT hours, today status
 - Attendance history: Date-wise IN/OUT logs
 - Salary section: Monthly list + download salary slip (last 12 months)
-- Auto salary slip generation trigger on 1st of month
+- Auto salary slip generation on 1st of month via WorkManager (IST timezone)
 
 ### Security / Supervisor Mode
 - Login with security/supervisor credentials
@@ -354,28 +362,28 @@ Firestore
 
 ---
 
-## \ud83d\udda5\ufe0f Admin App Features (Python Tkinter)
+## 🖥️ Admin App Features (Python Tkinter)
 
 | Module | Features |
 |---|---|
-| Dashboard | Live attendance, employees inside count |
-| Employees | Add/Edit/Delete, Activate/Deactivate, QR card print |
-| Attendance | Date-wise logs, IN/OUT timeline, filters |
+| Dashboard | Live attendance, employees-inside count |
+| Employees | Add/Edit/Delete, Activate/Deactivate, ID card + QR print |
+| Attendance | Date-wise logs, IN/OUT timeline, duty/OT/Sunday rule filters |
 | Salary | Generate/edit, bonus/deduction/advance, payment mode |
 | QR Generator | Location QRs (Gate/Office/Floor) + Employee ID cards |
-| Settings | Company details, SMTP config, OT rate, working days |
-| Roles | HR / CA / Manager / Admin with permission control |
+| Settings | Company details, SMTP config, OT rate, working days/month |
+| Roles | HR / CA / Manager / Admin with scoped permission control |
 
 ---
 
-## \ud83d\udce6 Build
+## 📦 Build
 
 ### Admin App (Windows EXE)
 ```bash
 cd admin_app/
 pip install -r requirements.txt
 pyinstaller --onefile --windowed --name HypeHR main.py
-# Use Inno Setup to create installer from dist/HypeHR.exe
+# Then use Inno Setup to create installer from dist/HypeHR.exe
 ```
 
 ### Android App (APK)
@@ -387,7 +395,7 @@ cd android_app/
 
 ---
 
-## \ud83d\ude80 Future Roadmap
+## 🚀 Future Roadmap
 
 - [ ] Face recognition attendance
 - [ ] GPS-based geo-fencing validation
@@ -398,15 +406,15 @@ cd android_app/
 
 ---
 
-## \ud83d\udc68\u200d\ud83d\udcbb Developer
+## 👨‍💻 Developer
 
 **David** | Nexuzy Lab  
-\ud83d\udce7 nexuzylab@gmail.com  
-\ud83d\udd17 [github.com/david0154](https://github.com/david0154)  
-\ud83d\udcf1 Built for Indian SMBs with love from Kolkata \u2764\ufe0f
+📧 nexuzylab@gmail.com  
+🔗 [github.com/david0154](https://github.com/david0154)  
+📱 Built for Indian SMBs with love from Kolkata ❤️
 
 ---
 
 <p align="center">
-  <sub>\u00a9 2026 Nexuzy Lab \u2014 Hype HR Management System. MIT License.</sub>
+  <sub>© 2026 Nexuzy Lab — Hype HR Management System. MIT License.</sub>
 </p>
