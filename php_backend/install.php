@@ -1,67 +1,414 @@
 <?php
 /**
- * Hype HR Management — One Click Installer
- * Upload php_backend to hosting, open install.php in browser, fill values, done.
+ * Hype HR Management — One-Click Hosting Installer & Admin Panel
+ * Sets up Firebase config, SMTP, optional SMS, and writes config.php directly.
+ * NO .env file needed — all values saved to config.php automatically.
+ *
+ * @author    David
+ * @org       Nexuzy Lab
+ * @email     nexuzylab@gmail.com
+ * @github    https://github.com/david0154
+ * @project   Hype HR Management System
  */
 
-$root = __DIR__;
+define('INSTALLER_VERSION', '1.0.0');
+define('CONFIG_FILE', __DIR__ . '/config.php');
+define('SA_FILE', __DIR__ . '/serviceAccountKey.json');
+
+$step    = (int)($_GET['step'] ?? 1);
 $message = '';
-$success = false;
+$msgType = 'info';
 
+// ─── Handle POST saves ────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $env = [
-        'FIREBASE_PROJECT_ID' => trim($_POST['firebase_project_id'] ?? ''),
-        'FIREBASE_API_KEY' => trim($_POST['firebase_api_key'] ?? ''),
-        'FIREBASE_STORAGE_BUCKET' => trim($_POST['firebase_storage_bucket'] ?? ''),
-        'SMS_PROVIDER' => trim($_POST['sms_provider'] ?? ''),
-        'SMS_API_KEY' => trim($_POST['sms_api_key'] ?? ''),
-        'SMS_AUTH_TOKEN' => trim($_POST['sms_auth_token'] ?? ''),
-        'SMS_ACCOUNT_SID' => trim($_POST['sms_account_sid'] ?? ''),
-        'SMS_FROM_NUMBER' => trim($_POST['sms_from_number'] ?? ''),
-        'SMS_SENDER_ID' => trim($_POST['sms_sender_id'] ?? 'HYPEHR'),
-    ];
+    $action = $_POST['action'] ?? '';
 
-    $lines = [];
-    foreach ($env as $k => $v) {
-        $lines[] = $k . '="' . addslashes($v) . '"';
+    if ($action === 'save_firebase') {
+        $pid    = trim($_POST['firebase_project_id'] ?? '');
+        $apiKey = trim($_POST['firebase_api_key'] ?? '');
+        $bucket = trim($_POST['firebase_storage_bucket'] ?? '');
+        $saJson = trim($_POST['service_account_json'] ?? '');
+
+        if (!$pid || !$bucket) {
+            $message = 'Firebase Project ID and Storage Bucket are required.';
+            $msgType = 'error';
+        } else {
+            if ($saJson) {
+                $decoded = json_decode($saJson, true);
+                if (!$decoded || empty($decoded['client_email'])) {
+                    $message = 'Invalid Service Account JSON — paste the full JSON from Firebase Console.';
+                    $msgType = 'error';
+                } else {
+                    file_put_contents(SA_FILE, $saJson);
+                }
+            }
+
+            if (!$message) {
+                _writeConfig($pid, $apiKey, $bucket);
+                $message = '✅ Firebase configured successfully! Proceed to Step 2.';
+                $msgType = 'success';
+                $step = 2;
+            }
+        }
     }
 
-    file_put_contents($root . '/.env', implode(PHP_EOL, $lines) . PHP_EOL);
-
-    if (!empty($_POST['service_account_json'])) {
-        file_put_contents($root . '/serviceAccountKey.json', trim($_POST['service_account_json']));
+    if ($action === 'save_smtp') {
+        $smtpData = [
+            'smtp_host'       => trim($_POST['smtp_host'] ?? ''),
+            'smtp_port'       => trim($_POST['smtp_port'] ?? '587'),
+            'smtp_user'       => trim($_POST['smtp_user'] ?? ''),
+            'smtp_pass'       => trim($_POST['smtp_pass'] ?? ''),
+            'smtp_from_name'  => trim($_POST['smtp_from_name'] ?? ''),
+            'smtp_secure'     => trim($_POST['smtp_secure'] ?? 'tls'),
+        ];
+        file_put_contents(__DIR__ . '/smtp_config.json', json_encode($smtpData, JSON_PRETTY_PRINT));
+        $message = '✅ SMTP configuration saved! You can now test mail from Step 3.';
+        $msgType = 'success';
+        $step = 3;
     }
 
-    $htaccess = "RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^ webhook.php [QSA,L]\n";
-    file_put_contents(dirname(__DIR__) . '/.htaccess', $htaccess);
+    if ($action === 'save_sms') {
+        $smsData = [
+            'sms_provider'    => trim($_POST['sms_provider'] ?? ''),
+            'sms_api_key'     => trim($_POST['sms_api_key'] ?? ''),
+            'sms_auth_token'  => trim($_POST['sms_auth_token'] ?? ''),
+            'sms_account_sid' => trim($_POST['sms_account_sid'] ?? ''),
+            'sms_from_number' => trim($_POST['sms_from_number'] ?? ''),
+            'sms_sender_id'   => trim($_POST['sms_sender_id'] ?? 'HYPEHR'),
+        ];
+        file_put_contents(__DIR__ . '/sms_config.json', json_encode($smsData, JSON_PRETTY_PRINT));
+        $message = '✅ SMS configuration saved!';
+        $msgType = 'success';
+        $step = 4;
+    }
 
-    $success = true;
-    $message = 'Installation complete. Now run composer install and set cron: 5 0 1 * * php ' . $root . '/cron_job.php';
+    if ($action === 'test_smtp') {
+        $smtpCfg = json_decode(file_get_contents(__DIR__ . '/smtp_config.json') ?: '{}', true);
+        $to = trim($_POST['test_email'] ?? '');
+        if (!$to) {
+            $message = 'Enter a test email address.';
+            $msgType = 'error';
+        } else {
+            $result = _testSmtp($smtpCfg, $to);
+            $message = $result ? '✅ Test email sent to ' . htmlspecialchars($to) : '❌ SMTP test failed. Check host/port/credentials.';
+            $msgType = $result ? 'success' : 'error';
+        }
+        $step = 3;
+    }
 }
+
+// ─── Write config.php (no .env needed) ───────────────────────────────────────
+function _writeConfig(string $pid, string $apiKey, string $bucket): void {
+    $smsConfig = file_exists(__DIR__ . '/sms_config.json')
+        ? json_decode(file_get_contents(__DIR__ . '/sms_config.json'), true)
+        : [];
+
+    $tpl = '<?php
+/**
+ * Hype HR Management — PHP Backend Configuration (auto-generated by installer)
+ * DO NOT edit manually — use install.php admin panel.
+ *
+ * @author  David
+ * @org     Nexuzy Lab
+ * @email   nexuzylab@gmail.com
+ * @github  https://github.com/david0154
+ */
+
+// ── Firebase ──────────────────────────────────────────────────────────────────
+define(\'FIREBASE_PROJECT_ID\',     \'' . addslashes($pid) . '\');
+define(\'FIREBASE_API_KEY\',        \'' . addslashes($apiKey) . '\');
+define(\'FIREBASE_STORAGE_BUCKET\', \'' . addslashes($bucket) . '\');
+define(\'SERVICE_ACCOUNT_PATH\',    __DIR__ . \'/serviceAccountKey.json\');
+
+// ── Paths ─────────────────────────────────────────────────────────────────────
+define(\'PDF_TEMP_DIR\', __DIR__ . \'/temp/\');
+define(\'ASSETS_DIR\',   __DIR__ . \'/../assets/\');
+
+// ── Retention ─────────────────────────────────────────────────────────────────
+define(\'SLIP_RETENTION_MONTHS\', 12);
+
+// ── App meta ──────────────────────────────────────────────────────────────────
+define(\'APP_NAME\',    \'Hype HR Management\');
+define(\'SUPPORT_MAIL\',\'nexuzylab@gmail.com\');
+define(\'DEV_NAME\',    \'David\');
+define(\'DEV_GITHUB\',  \'https://github.com/david0154\');
+
+// ── SMS (optional) ────────────────────────────────────────────────────────────
+define(\'SMS_PROVIDER\',    \'' . addslashes($smsConfig['sms_provider'] ?? '') . '\');
+define(\'SMS_API_KEY\',     \'' . addslashes($smsConfig['sms_api_key'] ?? '') . '\');
+define(\'SMS_AUTH_TOKEN\',  \'' . addslashes($smsConfig['sms_auth_token'] ?? '') . '\');
+define(\'SMS_ACCOUNT_SID\', \'' . addslashes($smsConfig['sms_account_sid'] ?? '') . '\');
+define(\'SMS_FROM_NUMBER\', \'' . addslashes($smsConfig['sms_from_number'] ?? '') . '\');
+define(\'SMS_SENDER_ID\',   \'' . addslashes($smsConfig['sms_sender_id'] ?? 'HYPEHR') . '\');
+
+// ── Ensure temp dir ───────────────────────────────────────────────────────────
+if (!is_dir(PDF_TEMP_DIR)) mkdir(PDF_TEMP_DIR, 0755, true);
+';
+    file_put_contents(CONFIG_FILE, $tpl);
+}
+
+function _testSmtp(array $cfg, string $to): bool {
+    if (empty($cfg['smtp_host'])) return false;
+    require_once __DIR__ . '/vendor/autoload.php';
+    use PHPMailer\PHPMailer\PHPMailer;
+    $mail = new PHPMailer(true);
+    try {
+        $mail->isSMTP();
+        $mail->Host = $cfg['smtp_host'];
+        $mail->Port = (int)($cfg['smtp_port'] ?? 587);
+        $mail->SMTPAuth = true;
+        $mail->Username = $cfg['smtp_user'] ?? '';
+        $mail->Password = $cfg['smtp_pass'] ?? '';
+        $mail->SMTPSecure = ($cfg['smtp_secure'] ?? 'tls') === 'ssl' ? 'ssl' : 'tls';
+        $mail->setFrom($cfg['smtp_user'] ?? 'test@test.com', $cfg['smtp_from_name'] ?? 'Hype HR');
+        $mail->addAddress($to);
+        $mail->Subject = 'Hype HR — SMTP Test';
+        $mail->Body = 'SMTP connection is working correctly. | Nexuzy Lab | nexuzylab@gmail.com';
+        $mail->send();
+        return true;
+    } catch (\Throwable $e) {
+        error_log('[HypeHR SMTP Test] ' . $e->getMessage());
+        return false;
+    }
+}
+
+$installed   = file_exists(CONFIG_FILE) && file_exists(SA_FILE);
+$smtpSaved   = file_exists(__DIR__ . '/smtp_config.json');
+$smsSaved    = file_exists(__DIR__ . '/sms_config.json');
+$smtpConfig  = $smtpSaved ? json_decode(file_get_contents(__DIR__ . '/smtp_config.json'), true) : [];
+$smsConfig   = $smsSaved  ? json_decode(file_get_contents(__DIR__ . '/sms_config.json'),  true) : [];
+$currentConfig = file_exists(CONFIG_FILE) ? file_get_contents(CONFIG_FILE) : '';
+$currentPID  = '';
+if (preg_match("/FIREBASE_PROJECT_ID',\s*'([^']+)'/", $currentConfig, $m)) $currentPID = $m[1];
+$currentBucket = '';
+if (preg_match("/FIREBASE_STORAGE_BUCKET',\s*'([^']+)'/", $currentConfig, $m)) $currentBucket = $m[1];
 ?>
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hype HR Installer</title>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hype HR — Setup Installer</title>
 <style>
-body{font-family:Arial,sans-serif;background:#f5f7fb;margin:0;padding:24px;color:#222}.wrap{max-width:900px;margin:auto;background:#fff;padding:24px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
-input,textarea,select{width:100%;padding:12px;margin-top:6px;margin-bottom:16px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}button{background:#0d6efd;color:#fff;border:none;padding:14px 18px;border-radius:8px;font-weight:700;cursor:pointer}.ok{padding:12px;background:#eaf8ee;border:1px solid #8bd3a4;border-radius:8px;margin-bottom:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
-</style></head><body><div class="wrap">
-<h1>Hype HR Management Installer</h1>
-<p>Configure Firebase, optional SMS, and upload service account JSON for one-click hosting setup.</p>
-<?php if ($message): ?><div class="<?= $success ? 'ok' : '' ?>"><?= htmlspecialchars($message) ?></div><?php endif; ?>
-<form method="post">
-<div class="grid">
-<div><label>Firebase Project ID<input name="firebase_project_id" required></label></div>
-<div><label>Firebase API Key<input name="firebase_api_key"></label></div>
-<div><label>Firebase Storage Bucket<input name="firebase_storage_bucket" required placeholder="your-project.appspot.com"></label></div>
-<div><label>SMS Provider<select name="sms_provider"><option value="">Disabled</option><option value="twilio">Twilio</option><option value="fast2sms">Fast2SMS</option><option value="msg91">MSG91</option></select></label></div>
-<div><label>SMS API Key<input name="sms_api_key"></label></div>
-<div><label>SMS Auth Token<input name="sms_auth_token"></label></div>
-<div><label>SMS Account SID<input name="sms_account_sid"></label></div>
-<div><label>SMS From Number<input name="sms_from_number"></label></div>
-<div><label>SMS Sender ID<input name="sms_sender_id" value="HYPEHR"></label></div>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#0d1b2a;min-height:100vh;padding:20px;color:#e0e0e0}
+.container{max-width:860px;margin:0 auto}
+.header{text-align:center;padding:30px 0 20px}
+.header h1{font-size:28px;color:#f77f00;font-weight:800;letter-spacing:1px}
+.header p{color:#8ab4c8;margin-top:6px;font-size:14px}
+.dev-badge{display:inline-block;margin-top:10px;background:#1e3a5f;color:#7ec8e3;padding:5px 16px;border-radius:20px;font-size:12px}
+.steps{display:flex;justify-content:center;gap:0;margin:20px 0 30px;flex-wrap:wrap}
+.step{padding:10px 22px;background:#1a2a3a;color:#888;font-size:13px;font-weight:600;border-bottom:3px solid transparent;cursor:default;transition:.2s}
+.step.active{color:#f77f00;border-color:#f77f00;background:#1e3050}
+.step.done{color:#4caf50;border-color:#4caf50}
+.card{background:#162436;border-radius:14px;padding:28px 32px;margin-bottom:24px;border:1px solid #1e3a5f}
+.card h2{font-size:16px;color:#f77f00;margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:600px){.form-grid{grid-template-columns:1fr}}
+label{display:block;font-size:12px;color:#8ab4c8;margin-bottom:5px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+input,select,textarea{width:100%;padding:11px 14px;background:#0d1b2a;border:1px solid #2a4a6a;border-radius:8px;color:#e0e0e0;font-size:14px;transition:.2s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#f77f00;box-shadow:0 0 0 2px rgba(247,127,0,.15)}
+textarea{font-family:monospace;font-size:12px;resize:vertical}
+.full{grid-column:1/-1}
+.btn{padding:12px 24px;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;transition:.2s}
+.btn-primary{background:#f77f00;color:#fff}
+.btn-primary:hover{background:#e06b00}
+.btn-secondary{background:#1e6f9f;color:#fff}
+.btn-secondary:hover{background:#1a5c87}
+.btn-success{background:#2e8b57;color:#fff}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.alert{padding:14px 18px;border-radius:8px;margin-bottom:20px;font-size:14px;display:flex;align-items:center;gap:10px}
+.alert.success{background:#1a3d2b;border:1px solid #2e8b57;color:#6fcf97}
+.alert.error{background:#3d1a1a;border:1px solid #c0392b;color:#f1948a}
+.alert.info{background:#1a2e3d;border:1px solid #1e6f9f;color:#7ec8e3}
+.status-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.status-chip{padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600}
+.status-chip.ok{background:#1a3d2b;color:#6fcf97}
+.status-chip.warn{background:#3d2e1a;color:#f0a500}
+.cron-box{background:#0a1520;border:1px solid #1e3a5f;border-radius:8px;padding:14px;font-family:monospace;font-size:13px;color:#6fcf97;word-break:break-all}
+.footer{text-align:center;padding:20px;color:#3a5a7a;font-size:12px;margin-top:10px}
+.footer a{color:#f77f00;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🔧 Hype HR Management</h1>
+    <p>One-Click Backend Installer &amp; Admin Panel</p>
+    <span class="dev-badge">Developed by David &nbsp;|&nbsp; Nexuzy Lab &nbsp;|&nbsp; nexuzylab@gmail.com</span>
+  </div>
+
+  <div class="steps">
+    <div class="step <?= $step==1?'active':($installed?'done':'') ?>">1 · Firebase</div>
+    <div class="step <?= $step==2?'active':($smtpSaved?'done':'') ?>">2 · Email / SMTP</div>
+    <div class="step <?= $step==3?'active':($smsSaved?'done':'') ?>">3 · SMS (Optional)</div>
+    <div class="step <?= $step==4?'active':'' ?>">4 · Finish</div>
+  </div>
+
+  <?php if ($message): ?>
+  <div class="alert <?= $msgType ?>"><?= $message ?></div>
+  <?php endif; ?>
+
+  <?php if ($installed || $smtpSaved || $smsSaved): ?>
+  <div class="status-row">
+    <?php if ($installed):   ?><span class="status-chip ok">✅ Firebase Configured</span><?php endif; ?>
+    <?php if ($smtpSaved):  ?><span class="status-chip ok">✅ SMTP Saved</span><?php endif; ?>
+    <?php if ($smsSaved):   ?><span class="status-chip ok">✅ SMS Saved</span><?php endif; ?>
+    <?php if (!$installed): ?><span class="status-chip warn">⚠️ Firebase not configured</span><?php endif; ?>
+  </div>
+  <?php endif; ?>
+
+  <!-- STEP 1: Firebase -->
+  <?php if ($step <= 1 || !$installed): ?>
+  <div class="card">
+    <h2>🔥 Step 1 — Firebase Configuration</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="save_firebase">
+      <div class="form-grid">
+        <div>
+          <label>Firebase Project ID *</label>
+          <input name="firebase_project_id" required placeholder="my-app-id" value="<?= htmlspecialchars($currentPID) ?>">
+        </div>
+        <div>
+          <label>Firebase API Key</label>
+          <input name="firebase_api_key" placeholder="AIza...">
+        </div>
+        <div>
+          <label>Firebase Storage Bucket *</label>
+          <input name="firebase_storage_bucket" required placeholder="my-app.appspot.com" value="<?= htmlspecialchars($currentBucket) ?>">
+        </div>
+        <div class="full">
+          <label>Service Account JSON (paste full content from Firebase Console → Project Settings → Service Accounts)</label>
+          <textarea name="service_account_json" rows="10" placeholder='{"type":"service_account","project_id":"...","private_key":"..."}'></textarea>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Save Firebase Config →</button>
+      </div>
+    </form>
+  </div>
+  <?php endif; ?>
+
+  <!-- STEP 2: SMTP -->
+  <?php if ($step >= 2 || $smtpSaved): ?>
+  <div class="card">
+    <h2>📧 Step 2 — Email / SMTP Setup</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="save_smtp">
+      <div class="form-grid">
+        <div>
+          <label>SMTP Host *</label>
+          <input name="smtp_host" required placeholder="smtp.gmail.com" value="<?= htmlspecialchars($smtpConfig['smtp_host'] ?? '') ?>">
+        </div>
+        <div>
+          <label>SMTP Port</label>
+          <input name="smtp_port" placeholder="587" value="<?= htmlspecialchars($smtpConfig['smtp_port'] ?? '587') ?>">
+        </div>
+        <div>
+          <label>SMTP Username (email)</label>
+          <input name="smtp_user" type="email" placeholder="hr@yourcompany.com" value="<?= htmlspecialchars($smtpConfig['smtp_user'] ?? '') ?>">
+        </div>
+        <div>
+          <label>SMTP Password / App Password</label>
+          <input name="smtp_pass" type="password" placeholder="••••••••" value="<?= htmlspecialchars($smtpConfig['smtp_pass'] ?? '') ?>">
+        </div>
+        <div>
+          <label>From Name</label>
+          <input name="smtp_from_name" placeholder="Hype HR" value="<?= htmlspecialchars($smtpConfig['smtp_from_name'] ?? '') ?>">
+        </div>
+        <div>
+          <label>Encryption</label>
+          <select name="smtp_secure">
+            <option value="tls" <?= ($smtpConfig['smtp_secure'] ?? 'tls')==='tls'?'selected':'' ?>>TLS (port 587 — recommended)</option>
+            <option value="ssl" <?= ($smtpConfig['smtp_secure'] ?? '')==='ssl'?'selected':'' ?>>SSL (port 465)</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Save SMTP →</button>
+      </div>
+    </form>
+    <?php if ($smtpSaved): ?>
+    <form method="POST" style="margin-top:16px">
+      <input type="hidden" name="action" value="test_smtp">
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div style="flex:1"><label>Test Email Address</label><input name="test_email" type="email" placeholder="your@email.com"></div>
+        <button type="submit" class="btn btn-secondary">Send Test Email</button>
+      </div>
+    </form>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
+  <!-- STEP 3: SMS -->
+  <?php if ($step >= 3 || $smsSaved): ?>
+  <div class="card">
+    <h2>📱 Step 3 — SMS Service (Optional)</h2>
+    <p style="color:#8ab4c8;font-size:13px;margin-bottom:16px">Skip this step if you don't want SMS alerts. Supports Twilio, Fast2SMS (India), MSG91 (India).</p>
+    <form method="POST">
+      <input type="hidden" name="action" value="save_sms">
+      <div class="form-grid">
+        <div>
+          <label>SMS Provider</label>
+          <select name="sms_provider">
+            <option value="" <?= empty($smsConfig['sms_provider'])?'selected':'' ?>>Disabled / Skip</option>
+            <option value="fast2sms" <?= ($smsConfig['sms_provider']??'')==='fast2sms'?'selected':'' ?>>Fast2SMS (India — cheapest)</option>
+            <option value="msg91" <?= ($smsConfig['sms_provider']??'')==='msg91'?'selected':'' ?>>MSG91 (India)</option>
+            <option value="twilio" <?= ($smsConfig['sms_provider']??'')==='twilio'?'selected':'' ?>>Twilio (Global)</option>
+          </select>
+        </div>
+        <div>
+          <label>API Key</label>
+          <input name="sms_api_key" placeholder="Your SMS API key" value="<?= htmlspecialchars($smsConfig['sms_api_key'] ?? '') ?>">
+        </div>
+        <div>
+          <label>Auth Token (Twilio only)</label>
+          <input name="sms_auth_token" placeholder="Twilio auth token" value="<?= htmlspecialchars($smsConfig['sms_auth_token'] ?? '') ?>">
+        </div>
+        <div>
+          <label>Account SID (Twilio only)</label>
+          <input name="sms_account_sid" placeholder="Twilio account SID" value="<?= htmlspecialchars($smsConfig['sms_account_sid'] ?? '') ?>">
+        </div>
+        <div>
+          <label>From Number (Twilio only)</label>
+          <input name="sms_from_number" placeholder="+1234567890" value="<?= htmlspecialchars($smsConfig['sms_from_number'] ?? '') ?>">
+        </div>
+        <div>
+          <label>Sender ID (Fast2SMS / MSG91)</label>
+          <input name="sms_sender_id" placeholder="HYPEHR" value="<?= htmlspecialchars($smsConfig['sms_sender_id'] ?? 'HYPEHR') ?>">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Save SMS Config →</button>
+        <a href="?step=4" class="btn btn-secondary">Skip (No SMS) →</a>
+      </div>
+    </form>
+  </div>
+  <?php endif; ?>
+
+  <!-- STEP 4: Finish -->
+  <?php if ($step >= 4 || ($installed && $smtpSaved)): ?>
+  <div class="card">
+    <h2>🎉 Step 4 — Installation Complete</h2>
+    <div class="alert success">Backend is configured. Run <code>composer install</code> and set the cron job below.</div>
+    <p style="margin-bottom:12px;color:#8ab4c8;font-size:13px">Add this cron job on your server to auto-generate salary slips on the 1st of every month at 12:05 AM IST:</p>
+    <div class="cron-box">5 0 1 * * php <?= __DIR__ ?>/cron_job.php >> /var/log/hype_hr_cron.log 2>&1</div>
+    <p style="margin-top:14px;color:#8ab4c8;font-size:13px">Manual trigger API endpoints:</p>
+    <div class="cron-box" style="margin-top:8px"><?= (isset($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'yourdomain.com') ?>/webhook.php?action=health</div>
+    <div class="cron-box" style="margin-top:8px"><?= (isset($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'yourdomain.com') ?>/webhook.php?action=generate_salary&month_key=<?= date('Y-m', strtotime('first day of last month')) ?></div>
+    <div class="btn-row" style="margin-top:18px">
+      <a href="?step=1" class="btn btn-secondary">← Edit Firebase</a>
+      <a href="?step=2" class="btn btn-secondary">← Edit SMTP</a>
+      <a href="?step=3" class="btn btn-secondary">← Edit SMS</a>
+    </div>
+  </div>
+  <?php endif; ?>
+
+  <div class="footer">
+    Hype HR Management v<?= INSTALLER_VERSION ?> &nbsp;|&nbsp;
+    Developed by <a href="https://github.com/david0154">David</a> &nbsp;|&nbsp;
+    <a href="mailto:nexuzylab@gmail.com">Nexuzy Lab</a>
+  </div>
 </div>
-<label>Firebase Service Account JSON<textarea name="service_account_json" rows="12" placeholder='Paste full service account JSON here'></textarea></label>
-<button type="submit">Install Backend</button>
-</form>
-</div></body></html>
+</body>
+</html>
