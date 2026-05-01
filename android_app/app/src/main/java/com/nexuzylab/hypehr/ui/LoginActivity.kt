@@ -2,20 +2,24 @@ package com.nexuzylab.hypehr.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.nexuzylab.hypehr.R
 import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.databinding.ActivityLoginBinding
 import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
-import java.security.MessageDigest
 
 /**
- * Hype HR Management — Employee Login (Username + Password)
- * On first login: redirect to PIN setup.
- * On return: redirect to PIN entry.
+ * Hype HR Management — Employee Login
+ *
+ * - Verifies username + password against Firestore `employees` collection
+ * - On success: saves session (name, id, designation, company)
+ * - If PIN already set → PinLoginActivity
+ * - If no PIN       → PinSetupActivity
+ * - Security/Supervisor login link → SecurityLoginActivity
+ *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 class LoginActivity : AppCompatActivity() {
@@ -29,9 +33,15 @@ class LoginActivity : AppCompatActivity() {
         setContentView(binding.root)
         session = SessionManager(this)
 
-        // Security mode switch
-        binding.btnSecurityMode.setOnClickListener {
-            startActivity(Intent(this, SecurityLoginActivity::class.java))
+        // Already logged in
+        if (session.isLoggedIn()) {
+            navigateAfterLogin()
+            return
+        }
+        // Security mode active
+        if (session.isSecurityMode()) {
+            startActivity(Intent(this, SecurityDashboardActivity::class.java))
+            finish(); return
         }
 
         binding.btnLogin.setOnClickListener {
@@ -41,57 +51,54 @@ class LoginActivity : AppCompatActivity() {
                 Toast.makeText(this, "Enter username and password", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            binding.btnLogin.isEnabled = false
-            binding.btnLogin.text = "Verifying..."
-            lifecycleScope.launch { doLogin(username, password) }
+            doLogin(username, password)
+        }
+
+        binding.tvSecurityLogin.setOnClickListener {
+            startActivity(Intent(this, SecurityLoginActivity::class.java))
         }
     }
 
-    private suspend fun doLogin(username: String, password: String) {
-        val emp = FirestoreRepository.getEmployeeByUsername(username)
-        if (emp == null) {
+    private fun doLogin(username: String, password: String) {
+        binding.progressLogin.visibility = View.VISIBLE
+        binding.btnLogin.isEnabled = false
+
+        lifecycleScope.launch {
+            val emp = FirestoreRepository.getEmployeeByUsername(username)
             runOnUiThread {
-                Toast.makeText(this, "Employee not found", Toast.LENGTH_LONG).show()
-                resetBtn()
+                binding.progressLogin.visibility = View.GONE
+                binding.btnLogin.isEnabled = true
+
+                if (emp != null && emp["password"] == password) {
+                    val isActive = emp["is_active"] as? Boolean ?: true
+                    if (!isActive) {
+                        Toast.makeText(this@LoginActivity,
+                            "Account deactivated. Contact HR.", Toast.LENGTH_LONG).show()
+                        return@runOnUiThread
+                    }
+                    session.saveEmployee(
+                        empId       = emp["employee_id"] as? String ?: "",
+                        name        = emp["name"]        as? String ?: "",
+                        username    = username,
+                        designation = emp["designation"] as? String ?: "Employee",
+                        companyName = emp["company"]     as? String ?: "Hype Pvt Ltd"
+                    )
+                    navigateAfterLogin()
+                } else {
+                    binding.tilPassword.error = "Invalid username or password"
+                    Toast.makeText(this@LoginActivity,
+                        "Login failed. Check credentials.", Toast.LENGTH_SHORT).show()
+                }
             }
-            return
-        }
-        if (emp["is_active"] == false) {
-            runOnUiThread {
-                Toast.makeText(this, "Your account is deactivated. Contact HR.", Toast.LENGTH_LONG).show()
-                resetBtn()
-            }
-            return
-        }
-        val storedHash = emp["password_hash"] as? String ?: ""
-        val inputHash  = sha256(password)
-        if (storedHash != inputHash) {
-            runOnUiThread {
-                Toast.makeText(this, "Incorrect password", Toast.LENGTH_SHORT).show()
-                resetBtn()
-            }
-            return
-        }
-        // Success — save session
-        val empId = emp["employee_id"] as? String ?: ""
-        session.saveEmployee(empId, emp["name"] as? String ?: "", username)
-        runOnUiThread {
-            if (session.hasPin()) {
-                startActivity(Intent(this, PinLoginActivity::class.java))
-            } else {
-                startActivity(Intent(this, PinSetupActivity::class.java))
-            }
-            finish()
         }
     }
 
-    private fun resetBtn() {
-        binding.btnLogin.isEnabled = true
-        binding.btnLogin.text = "Login"
-    }
-
-    private fun sha256(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
+    private fun navigateAfterLogin() {
+        if (session.hasPin()) {
+            startActivity(Intent(this, PinLoginActivity::class.java))
+        } else {
+            startActivity(Intent(this, PinSetupActivity::class.java))
+        }
+        finish()
     }
 }

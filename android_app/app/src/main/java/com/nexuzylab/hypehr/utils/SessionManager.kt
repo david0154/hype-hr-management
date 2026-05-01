@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 
 /**
  * Hype HR Management — Session Manager
- * Stores login state, PIN, and security mode in SharedPreferences.
+ * Stores employee login state, PIN, designation, company and security-mode credentials.
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 class SessionManager(context: Context) {
@@ -15,37 +15,45 @@ class SessionManager(context: Context) {
 
     // ─────────────────────── EMPLOYEE SESSION ──────────────────────────
 
-    fun saveEmployee(empId: String, name: String, username: String) {
+    fun saveEmployee(
+        empId: String,
+        name: String,
+        username: String,
+        designation: String = "Employee",
+        companyName: String = "Hype Pvt Ltd"
+    ) {
         prefs.edit()
             .putString(KEY_EMP_ID, empId)
             .putString(KEY_EMP_NAME, name)
             .putString(KEY_USERNAME, username)
+            .putString(KEY_DESIGNATION, designation)
+            .putString(KEY_COMPANY, companyName)
             .putBoolean(KEY_LOGGED_IN, true)
             .putBoolean(KEY_SECURITY_MODE, false)
             .apply()
     }
 
-    fun isLoggedIn(): Boolean = prefs.getBoolean(KEY_LOGGED_IN, false)
-    fun getEmployeeId(): String = prefs.getString(KEY_EMP_ID, "") ?: ""
-    fun getEmployeeName(): String = prefs.getString(KEY_EMP_NAME, "") ?: ""
-    fun getUsername(): String = prefs.getString(KEY_USERNAME, "") ?: ""
+    fun isLoggedIn(): Boolean    = prefs.getBoolean(KEY_LOGGED_IN, false)
+    fun getEmployeeId(): String  = prefs.getString(KEY_EMP_ID, "")    ?: ""
+    fun getEmployeeName(): String= prefs.getString(KEY_EMP_NAME, "")  ?: ""
+    fun getUsername(): String    = prefs.getString(KEY_USERNAME, "")   ?: ""
+    fun getDesignation(): String = prefs.getString(KEY_DESIGNATION, "Employee") ?: "Employee"
+    fun getCompanyName(): String = prefs.getString(KEY_COMPANY, "Hype Pvt Ltd") ?: "Hype Pvt Ltd"
 
     fun logout() {
         prefs.edit()
-            .remove(KEY_EMP_ID)
-            .remove(KEY_EMP_NAME)
-            .remove(KEY_USERNAME)
-            .remove(KEY_LOGGED_IN)
-            .remove(KEY_PIN)
+            .remove(KEY_EMP_ID).remove(KEY_EMP_NAME).remove(KEY_USERNAME)
+            .remove(KEY_LOGGED_IN).remove(KEY_PIN)
+            .remove(KEY_DESIGNATION).remove(KEY_COMPANY)
             .apply()
     }
 
     // ─────────────────────── PIN ──────────────────────────────────────────
 
-    fun savePin(pin: String) = prefs.edit().putString(KEY_PIN, pin).apply()
-    fun hasPin(): Boolean = prefs.getString(KEY_PIN, null) != null
+    fun savePin(pin: String)            = prefs.edit().putString(KEY_PIN, pin).apply()
+    fun hasPin(): Boolean               = prefs.getString(KEY_PIN, null) != null
     fun verifyPin(input: String): Boolean = prefs.getString(KEY_PIN, null) == input
-    fun clearPin() = prefs.edit().remove(KEY_PIN).apply()
+    fun clearPin()                      = prefs.edit().remove(KEY_PIN).apply()
 
     // ─────────────────────── SECURITY MODE ─────────────────────────────
 
@@ -58,9 +66,10 @@ class SessionManager(context: Context) {
             .apply()
     }
 
-    fun isSecurityMode(): Boolean = prefs.getBoolean(KEY_SECURITY_MODE, false)
-    fun getSecurityUsername(): String = prefs.getString(KEY_SEC_USERNAME, "") ?: ""
-    fun getSecurityRole(): String = prefs.getString(KEY_SEC_ROLE, "") ?: ""
+    fun isSecurityMode(): Boolean      = prefs.getBoolean(KEY_SECURITY_MODE, false)
+    fun getSecurityUsername(): String  = prefs.getString(KEY_SEC_USERNAME, "") ?: ""
+    fun getSecurityRole(): String      = prefs.getString(KEY_SEC_ROLE, "")     ?: ""
+
     fun clearSecuritySession() {
         prefs.edit()
             .remove(KEY_SECURITY_MODE)
@@ -70,13 +79,15 @@ class SessionManager(context: Context) {
     }
 
     companion object {
-        private const val KEY_EMP_ID       = "emp_id"
-        private const val KEY_EMP_NAME     = "emp_name"
-        private const val KEY_USERNAME     = "username"
-        private const val KEY_LOGGED_IN    = "logged_in"
-        private const val KEY_PIN          = "pin"
+        private const val KEY_EMP_ID        = "emp_id"
+        private const val KEY_EMP_NAME      = "emp_name"
+        private const val KEY_USERNAME      = "username"
+        private const val KEY_LOGGED_IN     = "logged_in"
+        private const val KEY_PIN           = "pin"
+        private const val KEY_DESIGNATION   = "designation"
+        private const val KEY_COMPANY       = "company_name"
         private const val KEY_SECURITY_MODE = "security_mode"
-        private const val KEY_SEC_USERNAME = "sec_username"
-        private const val KEY_SEC_ROLE     = "sec_role"
+        private const val KEY_SEC_USERNAME  = "sec_username"
+        private const val KEY_SEC_ROLE      = "sec_role"
     }
 }

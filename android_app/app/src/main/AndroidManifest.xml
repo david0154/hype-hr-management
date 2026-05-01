@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -10,6 +14,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
 
     <application
+        android:name=".HypeHRApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Hype HR"
@@ -36,21 +41,29 @@
         <activity android:name=".ui.AttendanceActivity" android:exported="false"/>
         <activity android:name=".ui.SalaryActivity" android:exported="false"/>
         <activity android:name=".ui.AttendanceHistoryActivity" android:exported="false"/>
+        <activity android:name=".ui.SalarySlipViewerActivity" android:exported="false"/>
 
         <!-- Security / Supervisor flow -->
         <activity android:name=".ui.SecurityLoginActivity" android:exported="false"/>
         <activity android:name=".ui.SecurityDashboardActivity" android:exported="false"/>
         <activity android:name=".ui.SecurityScanActivity" android:exported="false"/>
 
-        <!-- Background monthly trigger -->
+        <!-- Boot receiver — schedules WorkManager on device boot -->
         <receiver
             android:name=".receivers.MonthlyBootReceiver"
-            android:exported="false">
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
             </intent-filter>
         </receiver>
-        <service android:name=".services.MonthlySalaryService" android:exported="false"/>
+
+        <!-- Background monthly salary service (fallback) -->
+        <service
+            android:name=".services.MonthlySalaryService"
+            android:exported="false"
+            android:stopWithTask="false"/>
 
     </application>
 </manifest>

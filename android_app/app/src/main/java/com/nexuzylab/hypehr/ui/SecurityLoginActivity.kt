@@ -2,21 +2,22 @@ package com.nexuzylab.hypehr.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
+import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.databinding.ActivitySecurityLoginBinding
 import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
-import java.security.MessageDigest
 
 /**
  * Hype HR Management — Security / Supervisor Login
- * Security logs in with username+password stored in Firestore users collection.
- * Role must be 'security' or 'manager' or 'hr'.
+ *
+ * Authenticates against Firestore `management_users` collection.
+ * Allowed roles: security, supervisor, hr, manager, ca
+ * After login → SecurityDashboardActivity (QR scan for employee IN/OUT).
+ *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 class SecurityLoginActivity : AppCompatActivity() {
@@ -29,60 +30,67 @@ class SecurityLoginActivity : AppCompatActivity() {
         binding = ActivitySecurityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
         session = SessionManager(this)
-        supportActionBar?.title = "Security / Supervisor Login"
+
+        // Already logged in as security
+        if (session.isSecurityMode()) {
+            goToDashboard()
+            return
+        }
+
+        setSupportActionBar(binding.toolbar)
+        supportActionBar?.title = "Security Login"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         binding.btnSecLogin.setOnClickListener {
-            val user = binding.etSecUsername.text.toString().trim()
-            val pass = binding.etSecPassword.text.toString().trim()
-            if (user.isEmpty() || pass.isEmpty()) {
-                Toast.makeText(this, "Enter credentials", Toast.LENGTH_SHORT).show()
+            val username = binding.etSecUsername.text.toString().trim()
+            val password = binding.etSecPassword.text.toString().trim()
+            if (username.isEmpty() || password.isEmpty()) {
+                Toast.makeText(this, "Enter username and password", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            binding.btnSecLogin.isEnabled = false
-            lifecycleScope.launch { doSecurityLogin(user, pass) }
+            doLogin(username, password)
         }
+
+        binding.tvBackToEmployee.setOnClickListener { finish() }
     }
 
-    private suspend fun doSecurityLogin(username: String, password: String) {
-        try {
-            val snap = Firebase.firestore.collection("admin_users")
-                .whereEqualTo("username", username)
-                .limit(1)
-                .get().await()
-            val user = snap.documents.firstOrNull()?.data
-            if (user == null) {
-                showError("User not found")
-                return
-            }
-            val role = user["role"] as? String ?: ""
-            if (role !in listOf("security", "manager", "hr", "admin")) {
-                showError("Access denied for role: $role")
-                return
-            }
-            val storedHash = user["password_hash"] as? String ?: ""
-            if (sha256(password) != storedHash) {
-                showError("Wrong password")
-                return
-            }
-            session.saveSecurityUser(username, role)
+    private fun doLogin(username: String, password: String) {
+        binding.progressSec.visibility  = View.VISIBLE
+        binding.btnSecLogin.isEnabled   = false
+
+        lifecycleScope.launch {
+            val user = FirestoreRepository.getManagementUser(username, password)
             runOnUiThread {
-                startActivity(Intent(this, SecurityDashboardActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK))
+                binding.progressSec.visibility = View.GONE
+                binding.btnSecLogin.isEnabled  = true
+
+                if (user != null) {
+                    val role = user["role"] as? String ?: "security"
+                    session.saveSecurityUser(username, role)
+                    Toast.makeText(
+                        this@SecurityLoginActivity,
+                        "Welcome, ${user["name"] ?: username} ($role)",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    goToDashboard()
+                } else {
+                    binding.tilSecPassword.error = "Invalid credentials or insufficient role"
+                    Toast.makeText(
+                        this@SecurityLoginActivity,
+                        "Login failed. Check credentials.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
-        } catch (e: Exception) {
-            showError(e.message ?: "Error")
         }
     }
 
-    private fun showError(msg: String) = runOnUiThread {
-        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-        binding.btnSecLogin.isEnabled = true
-    }
-
-    private fun sha256(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
+    private fun goToDashboard() {
+        startActivity(
+            Intent(this, SecurityDashboardActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        )
+        finish()
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
