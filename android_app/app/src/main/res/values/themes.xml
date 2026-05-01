@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.HypeHR" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
-        <item name="colorPrimary">#f77f00</item>
-        <item name="colorPrimaryVariant">#e06b00</item>
-        <item name="colorOnPrimary">#ffffff</item>
-        <item name="colorSecondary">#1e6f9f</item>
-        <item name="colorOnSecondary">#ffffff</item>
-        <item name="android:windowBackground">#0d1b2a</item>
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryVariant">@color/colorPrimaryDark</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/colorAccent</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="android:colorBackground">@color/colorBackground</item>
     </style>
     <style name="Theme.HypeHR.Splash" parent="Theme.HypeHR">
+        <item name="android:windowBackground">@color/colorPrimary</item>
         <item name="android:windowFullscreen">true</item>
     </style>
     <style name="Theme.HypeHR.NoActionBar" parent="Theme.HypeHR">

@@ -4,8 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /**
- * Hype HR Management — Session Manager
- * Stores employee login state, PIN, designation, company and security-mode credentials.
+ * Hype HR Management — Session Manager (COMPLETE)
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 class SessionManager(context: Context) {
@@ -13,14 +12,14 @@ class SessionManager(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("hype_hr_prefs", Context.MODE_PRIVATE)
 
-    // ─────────────────────── EMPLOYEE SESSION ──────────────────────────
+    // ─────────────────────── EMPLOYEE SESSION ──────────────────────
 
     fun saveEmployee(
-        empId: String,
-        name: String,
-        username: String,
+        empId:       String,
+        name:        String,
+        username:    String,
         designation: String = "Employee",
-        companyName: String = "Hype Pvt Ltd"
+        companyName: String = "Hype Pvt Ltd",
     ) {
         prefs.edit()
             .putString(KEY_EMP_ID, empId)
@@ -33,12 +32,12 @@ class SessionManager(context: Context) {
             .apply()
     }
 
-    fun isLoggedIn(): Boolean    = prefs.getBoolean(KEY_LOGGED_IN, false)
-    fun getEmployeeId(): String  = prefs.getString(KEY_EMP_ID, "")    ?: ""
-    fun getEmployeeName(): String= prefs.getString(KEY_EMP_NAME, "")  ?: ""
-    fun getUsername(): String    = prefs.getString(KEY_USERNAME, "")   ?: ""
-    fun getDesignation(): String = prefs.getString(KEY_DESIGNATION, "Employee") ?: "Employee"
-    fun getCompanyName(): String = prefs.getString(KEY_COMPANY, "Hype Pvt Ltd") ?: "Hype Pvt Ltd"
+    fun isLoggedIn(): Boolean = prefs.getBoolean(KEY_LOGGED_IN, false)
+    fun getEmployeeId(): String   = prefs.getString(KEY_EMP_ID, "") ?: ""
+    fun getEmployeeName(): String = prefs.getString(KEY_EMP_NAME, "") ?: ""
+    fun getUsername(): String     = prefs.getString(KEY_USERNAME, "") ?: ""
+    fun getDesignation(): String  = prefs.getString(KEY_DESIGNATION, "Employee") ?: "Employee"
+    fun getCompanyName(): String  = prefs.getString(KEY_COMPANY, "Hype Pvt Ltd") ?: "Hype Pvt Ltd"
 
     fun logout() {
         prefs.edit()
@@ -48,14 +47,14 @@ class SessionManager(context: Context) {
             .apply()
     }
 
-    // ─────────────────────── PIN ──────────────────────────────────────────
+    // ─────────────────────── PIN ────────────────────────────────────
 
-    fun savePin(pin: String)            = prefs.edit().putString(KEY_PIN, pin).apply()
-    fun hasPin(): Boolean               = prefs.getString(KEY_PIN, null) != null
+    fun savePin(pin: String) = prefs.edit().putString(KEY_PIN, pin).apply()
+    fun hasPin(): Boolean    = prefs.getString(KEY_PIN, null) != null
     fun verifyPin(input: String): Boolean = prefs.getString(KEY_PIN, null) == input
-    fun clearPin()                      = prefs.edit().remove(KEY_PIN).apply()
+    fun clearPin() = prefs.edit().remove(KEY_PIN).apply()
 
-    // ─────────────────────── SECURITY MODE ─────────────────────────────
+    // ─────────────────────── SECURITY MODE ─────────────────────────
 
     fun saveSecurityUser(username: String, role: String) {
         prefs.edit()
@@ -66,9 +65,9 @@ class SessionManager(context: Context) {
             .apply()
     }
 
-    fun isSecurityMode(): Boolean      = prefs.getBoolean(KEY_SECURITY_MODE, false)
-    fun getSecurityUsername(): String  = prefs.getString(KEY_SEC_USERNAME, "") ?: ""
-    fun getSecurityRole(): String      = prefs.getString(KEY_SEC_ROLE, "")     ?: ""
+    fun isSecurityMode(): Boolean     = prefs.getBoolean(KEY_SECURITY_MODE, false)
+    fun getSecurityUsername(): String = prefs.getString(KEY_SEC_USERNAME, "") ?: ""
+    fun getSecurityRole(): String     = prefs.getString(KEY_SEC_ROLE, "") ?: ""
 
     fun clearSecuritySession() {
         prefs.edit()
@@ -85,7 +84,7 @@ class SessionManager(context: Context) {
         private const val KEY_LOGGED_IN     = "logged_in"
         private const val KEY_PIN           = "pin"
         private const val KEY_DESIGNATION   = "designation"
-        private const val KEY_COMPANY       = "company_name"
+        private const val KEY_COMPANY       = "company"
         private const val KEY_SECURITY_MODE = "security_mode"
         private const val KEY_SEC_USERNAME  = "sec_username"
         private const val KEY_SEC_ROLE      = "sec_role"

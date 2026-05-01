@@ -1,17 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hype HR</string>
-    <string name="login">Login</string>
-    <string name="username">Username</string>
-    <string name="password">Password</string>
-    <string name="enter_pin">Enter PIN</string>
-    <string name="mark_attendance">Mark Attendance</string>
-    <string name="salary_slips">Salary Slips</string>
+    <string name="action_logout">Logout</string>
+    <string name="btn_login">Login</string>
+    <string name="btn_set_pin">Set PIN</string>
+    <string name="btn_enter_pin">Enter PIN</string>
+    <string name="btn_scan_qr">Scan QR</string>
+    <string name="btn_check_in">Check IN</string>
+    <string name="btn_check_out">Check OUT</string>
+    <string name="btn_download">Download Slip</string>
+    <string name="label_username">Username</string>
+    <string name="label_password">Password</string>
+    <string name="label_pin">Enter PIN</string>
+    <string name="label_pin_confirm">Confirm PIN</string>
+    <string name="hint_username">e.g. rahul.hype</string>
+    <string name="hint_password">Password</string>
+    <string name="hint_pin">4-6 digits</string>
+    <string name="today_status">Today Status</string>
+    <string name="total_present">Present Days</string>
+    <string name="total_absent">Absent Days</string>
+    <string name="total_ot">OT Hours</string>
+    <string name="salary_slips">My Salary Slips</string>
     <string name="attendance_history">Attendance History</string>
-    <string name="security_mode">Security / Supervisor Mode</string>
-    <string name="scan_qr">Scan QR Code</string>
-    <string name="check_in">Check IN</string>
-    <string name="check_out">Check OUT</string>
-    <string name="logout">Logout</string>
-    <string name="developed_by">Developed by David | Nexuzy Lab | nexuzylab@gmail.com</string>
+    <string name="no_records">No records found.</string>
+    <string name="security_login">Security / Supervisor Login</string>
+    <string name="back_to_employee">← Back to Employee Login</string>
+    <string name="powered_by">Hype HR Management | Nexuzy Lab</string>
 </resources>
