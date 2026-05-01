@@ -1,99 +1,125 @@
-# salary.py — Salary Panel (Admin App)
-# Handles: Generate All, Advance Payment, Bonus (March auto), Salary Raise
+# salary.py — Salary Panel + Bonus Logic (religion-based dates)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date
-from utils.db import read_all, write, update
-from utils.pdf_generator import generate_salary_slip
+from utils.db import read_all, read, write, update
 import calendar
 
+OT_MULTIPLIER  = 1.5
+WORKING_DAYS   = 26
+BONUS_MIN_DAYS = 240
 
-# ─── Constants ───────────────────────────────────────────────────────────────
-OT_MULTIPLIER   = 1.5
-WORKING_DAYS    = 26   # default; overridden by settings
-BONUS_MIN_DAYS  = 240  # minimum days worked previous year for bonus eligibility
+MONTH_MAP = {
+    "January": 1, "February": 2, "March": 3, "April": 4,
+    "May": 5, "June": 6, "July": 7, "August": 8,
+    "September": 9, "October": 10, "November": 11, "December": 12
+}
 
 
-# ─── Bonus Calculation ───────────────────────────────────────────────────────
-def calculate_bonus(base_salary, absent_days, working_days=WORKING_DAYS):
+# ─── Bonus helpers ─────────────────────────────────────────────────────────
+def get_bonus_config():
     """
-    Annual Bonus (March only, if eligible).
-
-    Rule:
-        Bonus = 1 month salary  BUT  only absent days are deducted.
-        Half-days, OT, advance, deductions are NOT included/excluded.
-
-        Bonus = Base Salary - (Absent Days × Daily Rate)
-        Daily Rate = Base Salary / Working Days
-
-    This gives the employee a clean month salary with only
-    absent-day cuts applied — nothing else.
+    Returns bonus_dates config from Firestore settings/bonus_dates.
+    Structure: { "hindu": {"month": "March", "day": 1, "enabled": True}, ... }
     """
-    daily_rate   = base_salary / working_days
-    absent_cut   = absent_days * daily_rate
-    bonus_amount = base_salary - absent_cut
-    return round(max(bonus_amount, 0), 2)
+    return read("settings", "bonus_dates") or {}
 
 
-def is_bonus_eligible(employee_id, current_year):
+def get_app_settings():
+    return read("settings", "app") or {}
+
+
+def is_bonus_month_for_religion(religion: str, month: int, year: int) -> bool:
     """
-    Check if employee worked >= BONUS_MIN_DAYS in previous calendar year.
-    Reads from Firestore sessions collection.
+    Check if today's month matches the configured bonus month for this religion.
+    e.g. Hindu bonus in March, Muslim bonus in April, etc.
     """
+    bonus_config = get_bonus_config()
+    key  = (religion or "other").lower()
+    conf = bonus_config.get(key, bonus_config.get("other", {}))
+    if not conf or not conf.get("enabled", False):
+        return False
+    bonus_month = MONTH_MAP.get(conf.get("month", "March"), 3)
+    return month == bonus_month
+
+
+def is_bonus_eligible(employee_id: str, current_year: int) -> bool:
+    """Employee must have worked >= BONUS_MIN_DAYS in previous year."""
+    app_settings = get_app_settings()
+    min_days = int(app_settings.get("bonus_min_days", BONUS_MIN_DAYS))
     prev_year = current_year - 1
-    sessions  = read_all("sessions", filters={
-        "employee_id": employee_id,
-        "year": prev_year
-    })
-    total_days = sum(
+    sessions  = read_all("sessions", filters={"employee_id": employee_id})
+    total = sum(
         1.0 if s.get("duty_status") == "full" else
         0.5 if s.get("duty_status") == "half" else 0.0
         for s in sessions
+        if _session_year(s) == prev_year
     )
-    return total_days >= BONUS_MIN_DAYS
+    return total >= min_days
 
 
-# ─── Salary Calculation ───────────────────────────────────────────────────────
-def calculate_salary(employee, month_sessions, month, year, working_days=WORKING_DAYS):
+def _session_year(s):
+    try:
+        return datetime.strptime(s["date"], "%Y-%m-%d").year
+    except Exception:
+        return 0
+
+
+def calculate_bonus(base_salary, absent_days, working_days=WORKING_DAYS):
     """
-    Full salary calculation for one employee for a given month.
-    Returns a dict with all components.
+    Bonus = 1 month salary with ONLY absent-day cuts.
+    Half-days, OT, advance are NOT involved.
     """
-    base_salary = float(employee.get("salary", 0))
-    advance     = float(employee.get("advance", 0))   # outstanding advance
-
-    # Attendance counts
-    full_days    = sum(1.0 for s in month_sessions if s.get("duty_status") == "full")
-    half_days    = sum(1.0 for s in month_sessions if s.get("duty_status") == "half")
-    absent_days  = working_days - full_days - (half_days * 0.5)
-    paid_sundays = _count_paid_sundays(employee["employee_id"], month, year)
-
-    attendance_ratio   = (full_days + half_days * 0.5 + paid_sundays) / working_days
-    attendance_salary  = round(base_salary * attendance_ratio, 2)
-
-    # OT (flat day units)
-    ot_full  = sum(1.0 for s in month_sessions if s.get("ot_status") == "full")
-    ot_half  = sum(1.0 for s in month_sessions if s.get("ot_status") == "half")
-    ot_units = ot_full + ot_half * 0.5
     daily_rate = base_salary / working_days
-    ot_pay     = round(ot_units * daily_rate * OT_MULTIPLIER, 2)
+    return round(max(base_salary - absent_days * daily_rate, 0), 2)
 
-    # Annual bonus — March only
-    annual_bonus = 0.0
+
+# ─── Main salary calculation ─────────────────────────────────────────────────────
+def calculate_salary(employee, month_sessions, month, year, working_days=None):
+    if working_days is None:
+        working_days = int(get_app_settings().get("working_days", WORKING_DAYS))
+
+    base_salary = float(employee.get("salary", 0))
+    advance     = float(employee.get("advance", 0))
+    religion    = employee.get("religion", "Other")
+
+    full_days = half_days = ot_full = ot_half = 0.0
+    sessions_map = {}
+    for s in month_sessions:
+        sessions_map[s.get("date", "")] = s
+        st = s.get("duty_status", "absent")
+        if st == "full":   full_days += 1
+        elif st == "half": half_days += 1
+        ot = s.get("ot_status", "none")
+        if ot == "full":   ot_full += 1
+        elif ot == "half": ot_half += 1
+
+    paid_sundays = _count_paid_sundays(employee["employee_id"], month, year, sessions_map)
+    absent_days  = max(0, working_days - full_days - half_days * 0.5)
+
+    att_ratio   = (full_days + half_days * 0.5 + paid_sundays) / working_days
+    att_salary  = round(base_salary * att_ratio, 2)
+
+    ot_units   = ot_full + ot_half * 0.5
+    daily_rate = base_salary / working_days
+    ot_rate    = float(get_app_settings().get("ot_multiplier", OT_MULTIPLIER))
+    ot_pay     = round(ot_units * daily_rate * ot_rate, 2)
+
+    # Religion-based bonus check
+    annual_bonus   = 0.0
     bonus_eligible = False
-    if month == 3:   # March
+    if is_bonus_month_for_religion(religion, month, year):
         bonus_eligible = is_bonus_eligible(employee["employee_id"], year)
         if bonus_eligible:
             annual_bonus = calculate_bonus(base_salary, absent_days, working_days)
 
-    final_salary = round(
-        attendance_salary + ot_pay + annual_bonus - advance, 2
-    )
+    final_salary = round(att_salary + ot_pay + annual_bonus - advance, 2)
 
     return {
         "employee_id":       employee["employee_id"],
         "name":              employee["name"],
+        "religion":          religion,
         "base_salary":       base_salary,
         "full_days":         full_days,
         "half_days":         half_days,
@@ -103,8 +129,9 @@ def calculate_salary(employee, month_sessions, month, year, working_days=WORKING
         "ot_half_days":      ot_half,
         "ot_day_units":      ot_units,
         "ot_pay":            ot_pay,
-        "attendance_salary": attendance_salary,
-        "annual_bonus":      annual_bonus,
+        "attendance_salary": att_salary,
+        "annual_bonus":      annual_bonus,       # amount (admin/HR/CA only)
+        "bonus_paid":        annual_bonus > 0,   # boolean for employee app
         "bonus_eligible":    bonus_eligible,
         "advance":           advance,
         "final_salary":      final_salary,
@@ -114,218 +141,149 @@ def calculate_salary(employee, month_sessions, month, year, working_days=WORKING
     }
 
 
-def _count_paid_sundays(employee_id, month, year):
-    """Count Sundays with pay based on Sat+Mon presence rule."""
-    sessions_map = {}
-    sessions = read_all("sessions", filters={"employee_id": employee_id})
-    for s in sessions:
-        try:
-            d = datetime.strptime(s["date"], "%Y-%m-%d").date()
-            if d.month == month and d.year == year:
-                sessions_map[d] = s
-        except Exception:
-            pass
-
+def _count_paid_sundays(employee_id, month, year, sessions_map):
     paid = 0.0
     cal  = calendar.monthcalendar(year, month)
-    for week in cal:
-        sat_d = date(year, month, week[5]) if week[5] != 0 else None
-        sun_d = date(year, month, week[6]) if week[6] != 0 else None
-        mon_d = None
-        # Monday of next week
-        next_week_idx = cal.index(week) + 1
-        if next_week_idx < len(cal) and cal[next_week_idx][0] != 0:
-            mon_d = date(year, month, cal[next_week_idx][0])
-
-        if sun_d is None:
+    for week_idx, week in enumerate(cal):
+        if week[6] == 0:
             continue
+        sun_d = date(year, month, week[6])
+        sat_n = week[5]
+        sat_d = date(year, month, sat_n) if sat_n != 0 else None
 
-        sat_present = sat_d and sessions_map.get(sat_d, {}).get("duty_status") in ("full", "half")
-        mon_present = mon_d and sessions_map.get(mon_d, {}).get("duty_status") in ("full", "half")
+        # Monday of next week (may be next month)
+        mon_d = None
+        if week_idx + 1 < len(cal) and cal[week_idx + 1][0] != 0:
+            mon_d = date(year, month, cal[week_idx + 1][0])
 
-        if sat_present and mon_present:
+        sat_ok = sat_d and sessions_map.get(
+            sat_d.isoformat(), {}).get("duty_status") in ("full", "half")
+        mon_ok = mon_d and sessions_map.get(
+            mon_d.isoformat(), {}).get("duty_status") in ("full", "half")
+
+        if sat_ok and mon_ok:
             paid += 1.0
-        elif sat_present and not mon_present:   # Saturday only → half pay
+        elif sat_ok and not mon_ok:
             paid += 0.5
-        # else: no Sunday pay
-
     return paid
 
 
-# ─── Advance Payment Panel ────────────────────────────────────────────────────
+# ─── Advance Panel ──────────────────────────────────────────────────────────
 class AdvancePanel(tk.Toplevel):
-    """
-    Dialog to record an advance payment given to an employee.
-    Advance is stored in the employee record and deducted from next salary.
-    """
-
     def __init__(self, parent, employee):
         super().__init__(parent)
         self.employee = employee
-        self.title(f"Advance Payment — {employee['name']} ({employee['employee_id']})")        
+        self.title(f"Advance Payment — {employee['name']} ({employee['employee_id']})")
         self.geometry("420x320")
         self.resizable(False, False)
         self.grab_set()
-        self._build_ui()
+        self._build()
 
-    def _build_ui(self):
+    def _build(self):
         emp = self.employee
-        current_advance = float(emp.get("advance", 0))
-
+        current = float(emp.get("advance", 0))
         frm = tk.Frame(self, padx=20, pady=20)
         frm.pack(fill="both", expand=True)
 
         tk.Label(frm, text="💵 Advance Payment",
-                 font=("Helvetica", 14, "bold")).pack(anchor="w", pady=(0, 10))
+                 font=("Helvetica", 13, "bold")).pack(anchor="w", pady=(0, 8))
+        tk.Label(frm, text=f"Employee: {emp['name']}  ({emp['employee_id']})",
+                 font=("Helvetica", 10)).pack(anchor="w")
+        tk.Label(frm, text=f"Outstanding Advance: Rs. {current:,.2f}",
+                 fg="#c0392b", font=("Helvetica", 10, "bold")).pack(anchor="w", pady=4)
 
-        # Info row
-        info = tk.Frame(frm)
-        info.pack(fill="x", pady=4)
-        tk.Label(info, text="Employee:", width=18, anchor="w").pack(side="left")
-        tk.Label(info, text=f"{emp['name']}  ({emp['employee_id']})",
-                 font=("Helvetica", 10, "bold")).pack(side="left")
+        tk.Frame(frm, height=1, bg="#bdc3c7").pack(fill="x", pady=8)
 
-        tk.Frame(frm, height=1, bg="#cccccc").pack(fill="x", pady=8)
-
-        # Current outstanding advance
-        cur = tk.Frame(frm)
-        cur.pack(fill="x", pady=2)
-        tk.Label(cur, text="Outstanding Advance:", width=22, anchor="w").pack(side="left")
-        tk.Label(cur, text=f"Rs. {current_advance:,.2f}",
-                 fg="#c0392b", font=("Helvetica", 10, "bold")).pack(side="left")
-
-        tk.Frame(frm, height=1, bg="#cccccc").pack(fill="x", pady=8)
-
-        # New advance amount
         amt_row = tk.Frame(frm)
-        amt_row.pack(fill="x", pady=4)
-        tk.Label(amt_row, text="New Advance Amount (Rs.):",
-                 width=24, anchor="w").pack(side="left")
-        self.advance_var = tk.StringVar()
-        tk.Entry(amt_row, textvariable=self.advance_var, width=12).pack(side="left")
+        amt_row.pack(fill="x", pady=3)
+        tk.Label(amt_row, text="New Advance (Rs.):", width=22, anchor="w").pack(side="left")
+        self.amt_var = tk.StringVar()
+        tk.Entry(amt_row, textvariable=self.amt_var, width=12).pack(side="left")
 
-        # Note
         note_row = tk.Frame(frm)
-        note_row.pack(fill="x", pady=4)
-        tk.Label(note_row, text="Note (optional):",
-                 width=24, anchor="w").pack(side="left")
+        note_row.pack(fill="x", pady=3)
+        tk.Label(note_row, text="Note (optional):", width=22, anchor="w").pack(side="left")
         self.note_var = tk.StringVar()
         tk.Entry(note_row, textvariable=self.note_var, width=24).pack(side="left")
 
         tk.Label(frm,
-                 text="⚠️ New advance is ADDED to existing outstanding advance.\n"
-                      "Full outstanding amount is deducted from next salary.",
-                 fg="#e67e22", font=("Helvetica", 8), justify="left"
-                 ).pack(anchor="w", pady=(8, 0))
+                 text="⚠️ Added to outstanding. Full balance deducted from next salary.",
+                 fg="#e67e22", font=("Helvetica", 8)
+                 ).pack(anchor="w", pady=(6, 0))
 
-        # Buttons
         btn_row = tk.Frame(frm)
-        btn_row.pack(fill="x", pady=(12, 0))
-        tk.Button(btn_row, text="✔ Save Advance",
-                  command=self._save, bg="#27ae60", fg="white",
-                  padx=12, pady=4).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Clear Outstanding",
-                  command=self._clear_advance, bg="#e74c3c", fg="white",
-                  padx=12, pady=4).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Cancel",
-                  command=self.destroy, padx=12, pady=4).pack(side="left")
+        btn_row.pack(fill="x", pady=10)
+        tk.Button(btn_row, text="✔ Save", command=self._save,
+                  bg="#27ae60", fg="white", padx=12).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Clear Outstanding", command=self._clear,
+                  bg="#e74c3c", fg="white", padx=12).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Cancel", command=self.destroy, padx=12).pack(side="left")
 
     def _save(self):
         try:
-            new_amt = float(self.advance_var.get().strip())
-            if new_amt < 0:
+            amt = float(self.amt_var.get().strip())
+            if amt < 0:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Error", "Enter a valid positive advance amount.", parent=self)
+            messagebox.showerror("Error", "Enter a valid amount.", parent=self)
             return
-
-        emp_id = self.employee["employee_id"]
+        emp_id  = self.employee["employee_id"]
         current = float(self.employee.get("advance", 0))
-        total   = round(current + new_amt, 2)
-        note    = self.note_var.get().strip() or "-"
-
-        # Update employee record
+        total   = round(current + amt, 2)
         update("employees", emp_id, {"advance": total})
-
-        # Log the advance transaction
         write("advance_logs", None, {
-            "employee_id":   emp_id,
-            "amount":        new_amt,
+            "employee_id": emp_id, "amount": amt,
             "total_outstanding": total,
-            "note":          note,
-            "date":          date.today().isoformat(),
-            "recorded_by":   "admin",   # replace with logged-in user
+            "note": self.note_var.get().strip() or "-",
+            "date": date.today().isoformat(),
         })
-
-        messagebox.showinfo(
-            "Saved",
-            f"Advance of Rs. {new_amt:,.2f} recorded.\n"
-            f"Total outstanding: Rs. {total:,.2f}\n"
-            f"Will be deducted from {self.employee['name']}'s next salary.",
-            parent=self
-        )
+        messagebox.showinfo("Saved",
+            f"Advance Rs. {amt:,.2f} recorded.\nTotal outstanding: Rs. {total:,.2f}",
+            parent=self)
         self.destroy()
 
-    def _clear_advance(self):
-        """Mark advance as fully repaid (set to 0)."""
-        if not messagebox.askyesno(
-            "Clear Advance",
-            f"Mark all outstanding advance for {self.employee['name']} as repaid?\n"
-            "This will set the outstanding balance to Rs. 0.",
-            parent=self
-        ):
+    def _clear(self):
+        if not messagebox.askyesno("Clear",
+                f"Mark advance for {self.employee['name']} as fully repaid?", parent=self):
             return
         emp_id = self.employee["employee_id"]
         update("employees", emp_id, {"advance": 0})
         write("advance_logs", None, {
-            "employee_id": emp_id,
-            "amount":      0,
+            "employee_id": emp_id, "amount": 0,
             "total_outstanding": 0,
-            "note":        "Advance cleared / fully repaid",
-            "date":        date.today().isoformat(),
-            "recorded_by": "admin",
+            "note": "Cleared / fully repaid",
+            "date": date.today().isoformat(),
         })
-        messagebox.showinfo("Cleared", "Outstanding advance set to Rs. 0.", parent=self)
+        messagebox.showinfo("Done", "Outstanding advance cleared.", parent=self)
         self.destroy()
 
 
-# ─── Salary Panel (main tab) ──────────────────────────────────────────────────
+# ─── Salary Panel (main tab) ──────────────────────────────────────────────────────
 class SalaryPanel(tk.Frame):
-    """
-    Main Salary tab in the Admin App.
-    Buttons: Generate All | Generate Single | Advance Payment | Salary Raise
-    """
-
     def __init__(self, parent, role="admin"):
         super().__init__(parent)
         self.role = role
         self._build_ui()
 
     def _build_ui(self):
-        # Header
-        hdr = tk.Frame(self, pady=10)
+        hdr = tk.Frame(self, pady=8)
         hdr.pack(fill="x")
         tk.Label(hdr, text="💰 Salary Management",
-                 font=("Helvetica", 15, "bold")).pack(side="left", padx=12)
+                 font=("Helvetica", 14, "bold")).pack(side="left", padx=12)
 
-        # Action buttons
-        btn_bar = tk.Frame(self)
-        btn_bar.pack(fill="x", padx=12, pady=4)
-
-        tk.Button(btn_bar, text="⚡ Generate All Salaries",
+        bar = tk.Frame(self)
+        bar.pack(fill="x", padx=12, pady=4)
+        tk.Button(bar, text="⚡ Generate All",
                   command=self._generate_all,
-                  bg="#2980b9", fg="white", padx=10, pady=5).pack(side="left", padx=4)
-
-        tk.Button(btn_bar, text="💵 Advance Payment",
+                  bg="#2980b9", fg="white", padx=10).pack(side="left", padx=4)
+        tk.Button(bar, text="💵 Advance Payment",
                   command=self._open_advance,
-                  bg="#e67e22", fg="white", padx=10, pady=5).pack(side="left", padx=4)
-
+                  bg="#e67e22", fg="white", padx=10).pack(side="left", padx=4)
         if self.role in ("super_admin", "admin", "ca"):
-            tk.Button(btn_bar, text="📈 Salary Raise",
+            tk.Button(bar, text="📈 Salary Raise",
                       command=self._salary_raise,
-                      bg="#27ae60", fg="white", padx=10, pady=5).pack(side="left", padx=4)
+                      bg="#27ae60", fg="white", padx=10).pack(side="left", padx=4)
 
-        # Month/Year selector
         sel = tk.Frame(self)
         sel.pack(fill="x", padx=12, pady=4)
         tk.Label(sel, text="Month:").pack(side="left")
@@ -334,54 +292,55 @@ class SalaryPanel(tk.Frame):
                      values=[str(i) for i in range(1, 13)]).pack(side="left", padx=4)
         tk.Label(sel, text="Year:").pack(side="left")
         self.year_var = tk.StringVar(value=str(datetime.now().year))
-        ttk.Entry(sel, textvariable=self.year_var, width=6).pack(side="left", padx=4)
+        tk.Entry(sel, textvariable=self.year_var, width=6).pack(side="left", padx=4)
 
-        # Employee list
-        self.tree = ttk.Treeview(self,
-            columns=("id", "name", "base", "advance", "final", "status"),
-            show="headings", height=18)
+        cols = ("id", "name", "religion", "base", "advance", "bonus", "final", "status")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=18)
         for col, w, label in [
-            ("id", 90, "Emp ID"),
-            ("name", 180, "Name"),
-            ("base", 100, "Base Salary"),
-            ("advance", 100, "Advance"),
-            ("final", 120, "Final Salary"),
-            ("status", 100, "Status"),
+            ("id", 90, "Emp ID"), ("name", 160, "Name"),
+            ("religion", 80, "Religion"), ("base", 90, "Base Salary"),
+            ("advance", 80, "Advance"), ("bonus", 100, "Bonus Month"),
+            ("final", 110, "Final Salary"), ("status", 80, "Status"),
         ]:
             self.tree.heading(col, text=label)
             self.tree.column(col, width=w)
         self.tree.pack(fill="both", expand=True, padx=12, pady=8)
-        self.tree.bind("<Double-1>", self._on_row_double_click)
-        self._load_employees()
+        self.tree.bind("<Double-1>", self._on_double)
+        self._load()
 
-    def _load_employees(self):
+    def _load(self):
         self.tree.delete(*self.tree.get_children())
         employees = read_all("employees", filters={"status": "active"})
         self.employees = {e["employee_id"]: e for e in employees}
+        bonus_config = read("settings", "bonus_dates") or {}
         for e in employees:
+            rel = e.get("religion", "Other").lower()
+            conf = bonus_config.get(rel, {})
+            bonus_month = conf.get("month", "—") if conf.get("enabled") else "—"
             self.tree.insert("", "end", values=(
                 e["employee_id"],
                 e["name"],
+                e.get("religion", "Other"),
                 f"Rs. {float(e.get('salary', 0)):,.0f}",
                 f"Rs. {float(e.get('advance', 0)):,.0f}",
+                bonus_month,
                 "—",
-                "Pending"
+                "Pending",
             ))
 
     def _selected_employee(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showwarning("Select", "Please select an employee first.")
+            messagebox.showwarning("Select", "Select an employee first.")
             return None
-        emp_id = self.tree.item(sel[0])["values"][0]
-        return self.employees.get(emp_id)
+        return self.employees.get(self.tree.item(sel[0])["values"][0])
 
     def _open_advance(self):
         emp = self._selected_employee()
         if emp:
             AdvancePanel(self, emp)
 
-    def _on_row_double_click(self, event):
+    def _on_double(self, _e):
         emp = self._selected_employee()
         if emp:
             AdvancePanel(self, emp)
@@ -391,52 +350,34 @@ class SalaryPanel(tk.Frame):
             month = int(self.month_var.get())
             year  = int(self.year_var.get())
         except ValueError:
-            messagebox.showerror("Error", "Invalid month or year.")
+            messagebox.showerror("Error", "Invalid month/year.")
             return
-
-        confirm = messagebox.askyesno(
-            "Generate Salaries",
-            f"Generate salary slips for ALL employees for {calendar.month_name[month]} {year}?\n\n"
-            f"{'(March — Annual bonus will be applied for eligible employees)' if month == 3 else ''}"
-        )
-        if not confirm:
+        if not messagebox.askyesno("Confirm",
+                f"Generate salaries for all employees for "
+                f"{calendar.month_name[month]} {year}?"):
             return
-
-        employees = read_all("employees", filters={"status": "active"})
-        success, failed = 0, 0
-        for emp in employees:
+        ok = fail = 0
+        for emp in read_all("employees", filters={"status": "active"}):
             try:
                 sessions = read_all("sessions", filters={
                     "employee_id": emp["employee_id"],
                     "month": month, "year": year
                 })
-                result = calculate_salary(emp, sessions, month, year)
+                result   = calculate_salary(emp, sessions, month, year)
                 slip_key = f"{emp['employee_id']}_{year}_{month:02d}"
-
-                from datetime import timedelta
-                from dateutil.relativedelta import relativedelta
-                expires = datetime.now() + relativedelta(months=12)
-
                 write("salary", slip_key, {
                     **result,
-                    "generated_at":   datetime.now().isoformat(),
-                    "slip_expires_at": expires.isoformat(),
+                    "generated_at": datetime.now().isoformat(),
                 })
-
-                # After saving, clear advance from employee record
                 if result["advance"] > 0:
                     update("employees", emp["employee_id"], {"advance": 0})
-
-                success += 1
+                ok += 1
             except Exception as ex:
-                print(f"[SalaryPanel] Error for {emp.get('employee_id')}: {ex}")
-                failed += 1
-
-        messagebox.showinfo(
-            "Done",
-            f"Salary generation complete.\n✅ Success: {success}\n❌ Failed: {failed}"
-        )
-        self._load_employees()
+                print(f"[SalaryPanel] {emp.get('employee_id')}: {ex}")
+                fail += 1
+        messagebox.showinfo("Done",
+            f"Salary generation complete.\n✅ {ok} success  ❌ {fail} failed")
+        self._load()
 
     def _salary_raise(self):
         emp = self._selected_employee()
@@ -444,33 +385,32 @@ class SalaryPanel(tk.Frame):
             return
         dlg = tk.Toplevel(self)
         dlg.title(f"Salary Raise — {emp['name']}")
-        dlg.geometry("340x180")
+        dlg.geometry("320x160")
         dlg.resizable(False, False)
         dlg.grab_set()
-
-        frm = tk.Frame(dlg, padx=20, pady=20)
+        frm = tk.Frame(dlg, padx=20, pady=16)
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=f"Current Salary: Rs. {float(emp.get('salary', 0)):,.0f}",
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=4)
+        tk.Label(frm,
+                 text=f"Current: Rs. {float(emp.get('salary', 0)):,.0f}",
+                 font=("Helvetica", 11, "bold")
+                 ).pack(anchor="w", pady=4)
         tk.Label(frm, text="New Salary (Rs.):").pack(anchor="w")
-        new_sal_var = tk.StringVar()
-        tk.Entry(frm, textvariable=new_sal_var, width=16).pack(anchor="w", pady=4)
+        var = tk.StringVar()
+        tk.Entry(frm, textvariable=var, width=14).pack(anchor="w", pady=4)
 
-        def save_raise():
+        def save():
             try:
-                new_sal = float(new_sal_var.get().strip())
-                if new_sal <= 0:
+                s = float(var.get().strip())
+                if s <= 0:
                     raise ValueError
             except ValueError:
-                messagebox.showerror("Error", "Enter a valid salary.", parent=dlg)
+                messagebox.showerror("Error", "Enter a valid amount.", parent=dlg)
                 return
-            update("employees", emp["employee_id"], {"salary": new_sal})
-            messagebox.showinfo("Saved", f"Salary updated to Rs. {new_sal:,.0f}.", parent=dlg)
+            update("employees", emp["employee_id"], {"salary": s})
+            messagebox.showinfo("Saved", f"Salary updated to Rs. {s:,.0f}.", parent=dlg)
             dlg.destroy()
-            self._load_employees()
+            self._load()
 
-        btn_row = tk.Frame(frm)
-        btn_row.pack(fill="x", pady=8)
-        tk.Button(btn_row, text="✔ Save", command=save_raise,
-                  bg="#27ae60", fg="white", padx=12).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Cancel", command=dlg.destroy, padx=12).pack(side="left")
+        tk.Button(frm, text="✔ Save", command=save,
+                  bg="#27ae60", fg="white", padx=12).pack(side="left", pady=8)
+        tk.Button(frm, text="Cancel", command=dlg.destroy, padx=12).pack(side="left", padx=8)

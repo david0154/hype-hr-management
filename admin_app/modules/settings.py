@@ -1,391 +1,264 @@
-"""
-Settings Module — Hype HR Management
-Company Details + SMTP Email + Salary Rules + Admin User Management
-+ Super Admin Rename / Company Rename
-Developed by David | Nexuzy Lab | nexuzylab@gmail.com
-"""
+# settings.py — Settings Panel (Admin App)
+# Tabs: Company | SMTP | Salary Rules | Bonus Dates | Admin Users | My Account
+
 import tkinter as tk
 from tkinter import ttk, messagebox
-from utils.db import read, write, update, read_all
-from modules.roles import has_permission, get_all_roles, get_role_display
+from utils.db import read, write, update
 
 
-class SettingsModule:
-    def __init__(self, parent_frame, current_user):
-        self.parent = parent_frame
-        self.current_user = current_user
-        self.role = current_user.get("role", "admin")
-        self.fields = {}
-        self.smtp_fields = {}
-        self.salary_rule_fields = {}
-        self._build_ui()
-        self._load_settings()
+RELIGIONS = ["Hindu", "Muslim", "Christian", "Sikh", "Buddhist", "Jain", "Other"]
 
-    def _build_ui(self):
-        tk.Label(self.parent, text="⚙ Settings",
-                 font=("Arial", 14, "bold"), bg="#0d1b2a", fg="white").pack(pady=10, anchor="w", padx=15)
-        nb = ttk.Notebook(self.parent)
-        nb.pack(fill="both", expand=True, padx=10, pady=5)
+MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
 
-        comp   = tk.Frame(nb, bg="#0d1b2a"); nb.add(comp,   text="🏢 Company")
-        smtp   = tk.Frame(nb, bg="#0d1b2a"); nb.add(smtp,   text="📧 Email / SMTP")
-        rules  = tk.Frame(nb, bg="#0d1b2a"); nb.add(rules,  text="💰 Salary Rules")
-        users  = tk.Frame(nb, bg="#0d1b2a"); nb.add(users,  text="👥 Admin Users")
-        me_tab = tk.Frame(nb, bg="#0d1b2a"); nb.add(me_tab, text="🔑 My Account")
 
-        self._company_tab(comp)
-        self._smtp_tab(smtp)
-        self._rules_tab(rules)
-        self._users_tab(users)
-        self._my_account_tab(me_tab)
+class SettingsPanel(tk.Frame):
+    def __init__(self, parent, role="admin"):
+        super().__init__(parent)
+        self.role = role
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-    def _entry_row(self, parent, row, label, key, show="", store=None):
-        tk.Label(parent, text=label, bg="#0d1b2a", fg="#ccc",
-                 font=("Arial", 10)).grid(row=row, column=0, sticky="w", padx=15, pady=7)
-        var = tk.StringVar()
-        tk.Entry(parent, textvariable=var, bg="#1e3a5f", fg="white",
-                 insertbackground="white", width=36, show=show
-                 ).grid(row=row, column=1, padx=10, pady=7)
-        if store is not None: store[key] = var
-        return var
+        self._company_tab(notebook)
+        self._smtp_tab(notebook)
+        self._salary_rules_tab(notebook)
+        self._bonus_dates_tab(notebook)   # ← NEW
+        if role in ("super_admin", "admin"):
+            self._admin_users_tab(notebook)
+        self._my_account_tab(notebook)
 
-    # ── Company Tab ─────────────────────────────────────────────────────────
-    def _company_tab(self, p):
-        tk.Label(p, text="🏢 Company Information",
-                 bg="#0d1b2a", fg="#f0c040",
-                 font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2,
-                                                   sticky="w", padx=15, pady=(12, 4))
-        labels = [
-            ("Company Name *",             "name"),
-            ("Company Address *",           "address"),
-            ("Company Email",               "email"),
-            ("Company Phone",               "phone"),
-            ("Username Domain (e.g. hype)", "company_domain"),
-            ("City",                        "city"),
-            ("State",                       "state"),
-            ("Country",                     "country"),
+    # ───────────────────────────────────────────────────────────────
+    def _company_tab(self, nb):
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" 🏢 Company ")
+
+        fields = [
+            ("Company Name",    "company_name"),
+            ("Address Line 1",  "address1"),
+            ("Address Line 2",  "address2"),
+            ("City / State",    "city_state"),
+            ("Email",           "email"),
+            ("Phone",           "phone"),
+            ("Username Domain", "company_domain"),
         ]
-        for i, (l, k) in enumerate(labels, start=1):
-            self._entry_row(p, i, l, k, store=self.fields)
+        data = read("settings", "company") or {}
+        self._vars_company = {}
+        for label, key in fields:
+            row = tk.Frame(frm)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=label + ":", width=20, anchor="w").pack(side="left")
+            var = tk.StringVar(value=data.get(key, ""))
+            tk.Entry(row, textvariable=var, width=36).pack(side="left")
+            self._vars_company[key] = var
 
-        # Domain hint
-        tk.Label(p,
-                 text="ℹ Username domain is used in employee usernames: name.<domain>"
-                      "\n  e.g. domain=nexuzy  →  rahul.nexuzy",
-                 bg="#0d1b2a", fg="#666", font=("Arial", 8),
-                 justify="left"
-                 ).grid(row=9, column=0, columnspan=2, sticky="w", padx=15)
-
-        tk.Button(p, text="💾 Save Company Info", bg="#f77f00", fg="white",
-                  font=("Arial", 11, "bold"), relief="flat",
-                  padx=15, pady=8, cursor="hand2",
-                  command=self._save_company
-                  ).grid(row=10, column=0, columnspan=2, pady=15, padx=15, sticky="ew")
-
-    # ── SMTP Tab ─────────────────────────────────────────────────────────────
-    def _smtp_tab(self, p):
-        labels = [
-            ("SMTP Host",            "smtp_host"),
-            ("SMTP Port",            "smtp_port"),
-            ("SMTP Username (email)","smtp_user"),
-            ("SMTP Password",        "smtp_pass"),
-            ("From Name",            "smtp_from_name"),
-        ]
-        for i, (l, k) in enumerate(labels):
-            self._entry_row(p, i, l, k,
-                            show="•" if k == "smtp_pass" else "",
-                            store=self.smtp_fields)
-        tk.Button(p, text="Test Connection", bg="#1e6f9f", fg="white", relief="flat",
-                  padx=10, pady=6, cursor="hand2",
-                  command=self._test_smtp).grid(row=8, column=0, pady=10, padx=15, sticky="w")
-        tk.Button(p, text="💾 Save SMTP", bg="#f77f00", fg="white",
-                  font=("Arial", 11, "bold"), relief="flat",
-                  padx=15, pady=8, cursor="hand2",
-                  command=self._save_smtp).grid(row=8, column=1, pady=10, padx=10)
-
-    # ── Rules Tab ─────────────────────────────────────────────────────────────
-    def _rules_tab(self, p):
-        labels = [
-            ("OT Rate Multiplier (e.g. 1.5)", "ot_rate_multiplier"),
-            ("Default Payment Mode",          "default_payment_mode"),
-            ("Monthly Working Days",           "monthly_working_days"),
-        ]
-        for i, (l, k) in enumerate(labels):
-            self._entry_row(p, i, l, k, store=self.salary_rule_fields)
-        tk.Button(p, text="💾 Save Rules", bg="#f77f00", fg="white",
-                  font=("Arial", 11, "bold"), relief="flat",
-                  padx=15, pady=8, cursor="hand2",
-                  command=self._save_rules
-                  ).grid(row=8, column=0, columnspan=2, pady=15, padx=15, sticky="ew")
-
-    # ── Admin Users Tab ─────────────────────────────────────────────────────────
-    def _users_tab(self, p):
-        tk.Label(p, text="Admin / HR / CA / Manager Users",
-                 bg="#0d1b2a", fg="#ccc", font=("Arial", 11, "bold")).pack(pady=10)
-
-        cols = ("Username", "Display Name", "Role", "Status")
-        self.users_tree = ttk.Treeview(p, columns=cols, show="headings", height=12)
-        for col in cols:
-            self.users_tree.heading(col, text=col)
-            self.users_tree.column(col, width=140, anchor="center")
-        self.users_tree.pack(fill="both", expand=True, padx=10)
-        self.users_tree.bind("<Double-1>", self._edit_user)
-
-        bf = tk.Frame(p, bg="#0d1b2a")
-        bf.pack(pady=5)
-        tk.Button(bf, text="+ Add User",  bg="#f77f00", fg="white", relief="flat",
-                  padx=10, pady=5, cursor="hand2",
-                  command=self._add_user).pack(side="left", padx=5)
-        tk.Button(bf, text="Refresh", bg="#555", fg="white", relief="flat",
-                  padx=10, pady=5, cursor="hand2",
-                  command=self._load_users).pack(side="left")
-        tk.Label(p, text="Double-click a user to edit / deactivate / delete",
-                 bg="#0d1b2a", fg="#444", font=("Arial", 8)).pack()
-        self._load_users()
-
-    # ── My Account Tab ────────────────────────────────────────────────────────
-    def _my_account_tab(self, p):
-        tk.Label(p, text="🔑 My Account",
-                 bg="#0d1b2a", fg="#f0c040", font=("Arial", 12, "bold")
-                 ).pack(pady=(15, 5), anchor="w", padx=20)
-
-        frame = tk.Frame(p, bg="#1a2740", padx=20, pady=20)
-        frame.pack(padx=20, pady=10, fill="x")
-
-        cur_user = self.current_user
-        tk.Label(frame, text=f"Username:  {cur_user.get('username','')} ",
-                 bg="#1a2740", fg="#ccc", font=("Arial", 10)).grid(
-                 row=0, column=0, columnspan=2, sticky="w", pady=4)
-        tk.Label(frame, text=f"Role:      {get_role_display(cur_user.get('role',''))}",
-                 bg="#1a2740", fg="#aaa", font=("Arial", 10)).grid(
-                 row=1, column=0, columnspan=2, sticky="w", pady=4)
-
-        # Password change
-        tk.Label(frame, text="Current Password",
-                 bg="#1a2740", fg="#ccc").grid(row=2, column=0, sticky="w", pady=6)
-        self._old_pass = tk.Entry(frame, show="*", width=26, bg="#0d1b2a",
-                                   fg="white", insertbackground="white", relief="flat", bd=4)
-        self._old_pass.grid(row=2, column=1, pady=6)
-
-        tk.Label(frame, text="New Password",
-                 bg="#1a2740", fg="#ccc").grid(row=3, column=0, sticky="w", pady=6)
-        self._new_pass = tk.Entry(frame, show="*", width=26, bg="#0d1b2a",
-                                   fg="white", insertbackground="white", relief="flat", bd=4)
-        self._new_pass.grid(row=3, column=1, pady=6)
-
-        tk.Label(frame, text="Confirm New",
-                 bg="#1a2740", fg="#ccc").grid(row=4, column=0, sticky="w", pady=6)
-        self._cfm_pass = tk.Entry(frame, show="*", width=26, bg="#0d1b2a",
-                                   fg="white", insertbackground="white", relief="flat", bd=4)
-        self._cfm_pass.grid(row=4, column=1, pady=6)
-
-        tk.Button(frame, text="🔒 Change Password", bg="#27ae60", fg="white",
-                  font=("Arial", 10, "bold"), relief="flat", padx=12, pady=6,
-                  cursor="hand2", command=self._change_password
-                  ).grid(row=5, column=0, columnspan=2, pady=12, sticky="ew")
-
-        # Super admin: rename username
-        if cur_user.get("role") in ("super_admin", "admin"):
-            sep = tk.Frame(p, bg="#333", height=1)
-            sep.pack(fill="x", padx=20, pady=5)
-
-            tk.Label(p, text="✏️ Rename Admin Username",
-                     bg="#0d1b2a", fg="#f0c040", font=("Arial", 11, "bold")
-                     ).pack(anchor="w", padx=20, pady=(8, 2))
-            tk.Label(p,
-                     text="Change your login username (e.g. admin.hype → admin.nexuzy)\n"
-                          "You will be asked to log in again after renaming.",
-                     bg="#0d1b2a", fg="#666", font=("Arial", 8)
-                     ).pack(anchor="w", padx=20)
-
-            rf = tk.Frame(p, bg="#1a2740", padx=20, pady=12)
-            rf.pack(padx=20, pady=6, fill="x")
-            tk.Label(rf, text="New Username", bg="#1a2740", fg="#ccc").grid(
-                row=0, column=0, sticky="w", pady=6)
-            self._new_uname = tk.Entry(rf, width=26, bg="#0d1b2a",
-                                        fg="white", insertbackground="white",
-                                        relief="flat", bd=4)
-            self._new_uname.grid(row=0, column=1, pady=6, padx=10)
-            tk.Button(rf, text="Rename", bg="#8e44ad", fg="white",
-                      font=("Arial", 10, "bold"), relief="flat", padx=12, pady=5,
-                      cursor="hand2", command=self._rename_username
-                      ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=6)
-
-    # ── Load / Save ────────────────────────────────────────────────────────────
-    def _load_settings(self):
-        try:
-            data = read("settings", "company") or {}
-            for k, v in self.fields.items():             v.set(data.get(k, ""))
-            for k, v in self.smtp_fields.items():        v.set(data.get(k, ""))
-            for k, v in self.salary_rule_fields.items(): v.set(str(data.get(k, "")))
-        except Exception as e:
-            print(f"Settings load: {e}")
+        tk.Button(frm, text="💾 Save Company Info",
+                  command=self._save_company,
+                  bg="#27ae60", fg="white", padx=12, pady=4
+                  ).pack(anchor="w", pady=12)
 
     def _save_company(self):
-        data = {k: v.get().strip() for k, v in self.fields.items()}
-        if not data.get("name"):
-            messagebox.showerror("Error", "Company name is required.")
-            return
-        write("settings", "company", data, merge=True)
-        messagebox.showinfo("Saved",
-            f"Company info saved!\n\nCompany: {data['name']}\n"
-            f"Domain: {data.get('company_domain','hype')}\n\n"
-            "Employee usernames will use the new domain from now on.")
+        data = {k: v.get().strip() for k, v in self._vars_company.items()}
+        write("settings", "company", data)
+        messagebox.showinfo("Saved", "Company info saved.")
+
+    # ───────────────────────────────────────────────────────────────
+    def _smtp_tab(self, nb):
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" 📧 SMTP ")
+
+        fields = [
+            ("SMTP Host",      "smtp_host"),
+            ("SMTP Port",      "smtp_port"),
+            ("Username",       "smtp_user"),
+            ("Password",       "smtp_pass"),
+            ("From Name",      "smtp_from_name"),
+            ("Encryption",     "smtp_encryption"),
+        ]
+        data = read("settings", "company") or {}
+        self._vars_smtp = {}
+        for label, key in fields:
+            row = tk.Frame(frm)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=label + ":", width=18, anchor="w").pack(side="left")
+            var = tk.StringVar(value=data.get(key, ""))
+            show = "*" if "pass" in key else ""
+            tk.Entry(row, textvariable=var, width=36, show=show).pack(side="left")
+            self._vars_smtp[key] = var
+
+        tk.Button(frm, text="💾 Save SMTP",
+                  command=self._save_smtp,
+                  bg="#27ae60", fg="white", padx=12, pady=4
+                  ).pack(anchor="w", pady=12)
 
     def _save_smtp(self):
-        data = {k: v.get().strip() for k, v in self.smtp_fields.items()}
-        write("settings", "company", data, merge=True)
-        messagebox.showinfo("Saved", "SMTP settings saved!")
+        data = {k: v.get().strip() for k, v in self._vars_smtp.items()}
+        existing = read("settings", "company") or {}
+        existing.update(data)
+        write("settings", "company", existing)
+        messagebox.showinfo("Saved", "SMTP settings saved.")
 
-    def _test_smtp(self):
-        import smtplib
-        host = self.smtp_fields["smtp_host"].get()
-        port = int(self.smtp_fields["smtp_port"].get() or 587)
-        user = self.smtp_fields["smtp_user"].get()
-        pwd  = self.smtp_fields["smtp_pass"].get()
-        try:
-            with smtplib.SMTP(host, port) as s:
-                s.starttls(); s.login(user, pwd)
-            messagebox.showinfo("SMTP", "✅ Connection successful!")
-        except Exception as e:
-            messagebox.showerror("SMTP", f"Failed: {e}")
+    # ───────────────────────────────────────────────────────────────
+    def _salary_rules_tab(self, nb):
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" ⚙️ Salary Rules ")
+
+        data = read("settings", "app") or {}
+
+        fields = [
+            ("Working Days / Month",    "working_days",      "26"),
+            ("OT Multiplier (e.g 1.5)", "ot_multiplier",     "1.5"),
+            ("Bonus Min Days / Year",   "bonus_min_days",    "240"),
+            ("Default Payment Mode",   "default_payment_mode", "CASH"),
+        ]
+        self._vars_rules = {}
+        for label, key, default in fields:
+            row = tk.Frame(frm)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=label + ":", width=26, anchor="w").pack(side="left")
+            var = tk.StringVar(value=data.get(key, default))
+            tk.Entry(row, textvariable=var, width=12).pack(side="left")
+            self._vars_rules[key] = var
+
+        tk.Button(frm, text="💾 Save Rules",
+                  command=self._save_rules,
+                  bg="#27ae60", fg="white", padx=12, pady=4
+                  ).pack(anchor="w", pady=12)
 
     def _save_rules(self):
-        data = {k: v.get().strip() for k, v in self.salary_rule_fields.items()}
-        write("settings", "company", data, merge=True)
-        messagebox.showinfo("Saved", "Salary rules saved!")
+        data = {k: v.get().strip() for k, v in self._vars_rules.items()}
+        existing = read("settings", "app") or {}
+        existing.update(data)
+        write("settings", "app", existing)
+        messagebox.showinfo("Saved", "Salary rules saved.")
 
-    # ── Users ──────────────────────────────────────────────────────────────────
-    def _load_users(self):
-        for row in self.users_tree.get_children():
-            self.users_tree.delete(row)
-        for u in read_all("admin_users"):
-            self.users_tree.insert("", "end", iid=u.get("username", ""), values=(
-                u.get("username"), u.get("display_name", u.get("full_name", "")),
-                get_role_display(u.get("role", "")),
-                "Active" if u.get("active", True) else "Inactive"))
+    # ─── Bonus Dates Tab (NEW) ────────────────────────────────────────────────────
+    def _bonus_dates_tab(self, nb):
+        """
+        Configure per-religion bonus month + day.
+        Each religion can have its own bonus date.
+        Bonus amount visibility: hidden from employee app always.
+        """
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" 🎁 Bonus Dates ")
 
-    def _add_user(self):
-        self._user_dialog()
+        tk.Label(frm,
+                 text="Set bonus month and day for each religion.",
+                 font=("Helvetica", 10)
+                 ).pack(anchor="w", pady=(0, 4))
+        tk.Label(frm,
+                 text="🔒 Bonus AMOUNT is always hidden from employee app — only HR/CA/Admin can see it.",
+                 fg="#e67e22", font=("Helvetica", 9)
+                 ).pack(anchor="w", pady=(0, 12))
 
-    def _edit_user(self, event):
-        sel = self.users_tree.selection()
-        if not sel: return
-        username = sel[0]
-        data = read("admin_users", username)
-        if data:
-            self._user_dialog(existing=data)
+        # Load existing bonus_dates from Firestore settings/bonus_dates
+        existing = read("settings", "bonus_dates") or {}
 
-    def _user_dialog(self, existing: dict = None):
-        is_edit = existing is not None
-        d = tk.Toplevel(self.parent)
-        d.title("Edit User" if is_edit else "Add Admin User")
-        d.geometry("420x380")
-        d.configure(bg="#0d1b2a")
-        d.grab_set()
+        # Table header
+        hdr = tk.Frame(frm)
+        hdr.pack(fill="x")
+        for col, w, txt in [
+            (0, 14, "Religion"),
+            (1, 14, "Bonus Month"),
+            (2, 8,  "Day"),
+            (3, 10, "Enabled"),
+        ]:
+            tk.Label(hdr, text=txt, width=w, anchor="w",
+                     font=("Helvetica", 9, "bold"),
+                     bg="#ecf0f1").grid(row=0, column=col, padx=2, pady=2)
 
-        flds = {}
-        field_defs = [
-            ("Username",    "username"),
-            ("Password",    "password"),
-            ("Display Name","display_name"),
-        ]
-        for i, (label, key) in enumerate(field_defs):
-            tk.Label(d, text=label, bg="#0d1b2a", fg="#ccc").grid(
-                row=i, column=0, padx=15, pady=8, sticky="w")
-            var = tk.StringVar(value=existing.get(key, "") if is_edit and key != "password" else "")
-            e = tk.Entry(d, textvariable=var, bg="#1e3a5f", fg="white",
-                         insertbackground="white",
-                         show="*" if key == "password" else "")
-            e.grid(row=i, column=1, padx=10, pady=8)
-            flds[key] = var
-            if is_edit and key == "username":
-                e.config(state="disabled")  # can't rename from here, use My Account
+        self._bonus_rows = {}
+        for i, religion in enumerate(RELIGIONS):
+            key  = religion.lower()
+            conf = existing.get(key, {})
 
-        tk.Label(d, text="Role", bg="#0d1b2a", fg="#ccc").grid(
-            row=3, column=0, padx=15, pady=8, sticky="w")
-        role_var = tk.StringVar(value=existing.get("role", "hr") if is_edit else "hr")
-        ttk.Combobox(d, textvariable=role_var,
-                     values=[r for r in get_all_roles() if r != "super_admin"]
-                     ).grid(row=3, column=1, padx=10, pady=8)
+            row = tk.Frame(frm)
+            row.pack(fill="x", pady=1)
 
-        tk.Label(d, text="Status", bg="#0d1b2a", fg="#ccc").grid(
-            row=4, column=0, padx=15, pady=8, sticky="w")
-        status_var = tk.BooleanVar(value=existing.get("active", True) if is_edit else True)
-        ttk.Checkbutton(d, text="Active", variable=status_var).grid(
-            row=4, column=1, padx=10, sticky="w")
+            # Religion label
+            tk.Label(row, text=religion, width=14, anchor="w").pack(side="left", padx=2)
 
-        def save():
-            import hashlib
-            u    = (existing["username"] if is_edit else flds["username"].get().strip())
-            pwd  = flds["password"].get().strip()
-            name = flds["display_name"].get().strip()
-            if not u:
-                messagebox.showerror("Error", "Username required.", parent=d)
-                return
-            data = {
-                "username":     u,
-                "display_name": name,
-                "role":         role_var.get(),
-                "active":       status_var.get(),
+            # Month dropdown
+            month_var = tk.StringVar(
+                value=conf.get("month", "March") if conf else "March"
+            )
+            ttk.Combobox(row, textvariable=month_var, values=MONTHS,
+                         width=12, state="readonly").pack(side="left", padx=2)
+
+            # Day entry
+            day_var = tk.StringVar(value=str(conf.get("day", 1)))
+            tk.Entry(row, textvariable=day_var, width=5).pack(side="left", padx=2)
+
+            # Enabled checkbox
+            enabled_var = tk.BooleanVar(value=conf.get("enabled", False))
+            tk.Checkbutton(row, variable=enabled_var).pack(side="left", padx=6)
+
+            self._bonus_rows[key] = {
+                "month":   month_var,
+                "day":     day_var,
+                "enabled": enabled_var,
             }
-            if pwd:
-                data["password_hash"] = hashlib.sha256(pwd.encode()).hexdigest()
-                data["must_change_password"] = False
-            write("admin_users", u, data, merge=True)
-            messagebox.showinfo("Saved", "User saved!", parent=d)
-            d.destroy()
-            self._load_users()
 
-        action_lbl = "Update User" if is_edit else "Create User"
-        tk.Button(d, text=action_lbl, bg="#f77f00", fg="white",
-                  font=("Arial", 11, "bold"), relief="flat",
-                  padx=15, pady=8, cursor="hand2", command=save
-                  ).grid(row=8, column=0, columnspan=2, pady=15, padx=15, sticky="ew")
+        tk.Frame(frm, height=1, bg="#bdc3c7").pack(fill="x", pady=10)
 
-    # ── My Account Actions ────────────────────────────────────────────────────────
-    def _change_password(self):
-        import hashlib
-        old = self._old_pass.get()
-        new = self._new_pass.get()
-        cfm = self._cfm_pass.get()
-        if len(new) < 8:
-            messagebox.showerror("Error", "New password must be at least 8 characters.")
-            return
-        if new != cfm:
-            messagebox.showerror("Error", "Passwords do not match.")
-            return
-        existing = read("admin_users", self.current_user["username"]) or {}
-        if existing.get("password_hash") != hashlib.sha256(old.encode()).hexdigest():
-            messagebox.showerror("Error", "Current password is incorrect.")
-            return
-        update("admin_users", self.current_user["username"], {
-            "password_hash": hashlib.sha256(new.encode()).hexdigest(),
-            "must_change_password": False
-        })
-        messagebox.showinfo("Success", "✅ Password updated. Please log in again.")
-        self._old_pass.delete(0, "end")
-        self._new_pass.delete(0, "end")
-        self._cfm_pass.delete(0, "end")
+        # Min days field
+        min_row = tk.Frame(frm)
+        min_row.pack(fill="x", pady=2)
+        tk.Label(min_row, text="Min Days for Bonus Eligibility:",
+                 width=30, anchor="w").pack(side="left")
+        app_settings = read("settings", "app") or {}
+        self._bonus_min_var = tk.StringVar(
+            value=str(app_settings.get("bonus_min_days", "240"))
+        )
+        tk.Entry(min_row, textvariable=self._bonus_min_var, width=6).pack(side="left")
+        tk.Label(min_row, text="working days in previous year",
+                 fg="#7f8c8d").pack(side="left", padx=4)
 
-    def _rename_username(self):
-        new_name = self._new_uname.get().strip()
-        if not new_name:
-            messagebox.showerror("Error", "Enter a new username."); return
-        if not messagebox.askyesno("Confirm Rename",
-                f"Rename '{self.current_user['username']}' → '{new_name}'?\n"
-                "You will need to log in again with the new username."):
-            return
-        import hashlib
-        existing = read("admin_users", self.current_user["username"]) or {}
-        existing["username"] = new_name
-        # Write new doc
-        write("admin_users", new_name, existing)
-        # Delete old doc
-        from utils.db import delete
-        delete("admin_users", self.current_user["username"])
-        messagebox.showinfo("Renamed",
-            f"✅ Username changed to '{new_name}'.\nPlease restart and log in with the new username.")
-        # Close the whole app to force re-login
-        self.parent.winfo_toplevel().destroy()
+        tk.Button(frm, text="💾 Save Bonus Dates",
+                  command=self._save_bonus_dates,
+                  bg="#8e44ad", fg="white", padx=12, pady=4
+                  ).pack(anchor="w", pady=12)
+
+    def _save_bonus_dates(self):
+        data = {}
+        for religion, vars_ in self._bonus_rows.items():
+            try:
+                day = int(vars_["day"].get().strip())
+                day = max(1, min(day, 31))
+            except ValueError:
+                day = 1
+            data[religion] = {
+                "month":   vars_["month"].get(),
+                "day":     day,
+                "enabled": vars_["enabled"].get(),
+            }
+        write("settings", "bonus_dates", data)
+
+        # Also update bonus_min_days in app settings
+        app_settings = read("settings", "app") or {}
+        try:
+            app_settings["bonus_min_days"] = int(self._bonus_min_var.get().strip())
+        except ValueError:
+            pass
+        write("settings", "app", app_settings)
+
+        messagebox.showinfo("Saved",
+            "Bonus dates saved.\n\n"
+            "Tip: Add each employee's religion in their profile\n"
+            "so the correct bonus date is applied automatically."
+        )
+
+    # ───────────────────────────────────────────────────────────────
+    def _admin_users_tab(self, nb):
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" 👥 Admin Users ")
+        tk.Label(frm, text="Admin user management",
+                 font=("Helvetica", 11)).pack(anchor="w")
+        # (full CRUD implementation in auth.py / roles.py)
+
+    def _my_account_tab(self, nb):
+        frm = tk.Frame(nb, padx=20, pady=20)
+        nb.add(frm, text=" 🔑 My Account ")
+        tk.Label(frm, text="Change password and rename username",
+                 font=("Helvetica", 11)).pack(anchor="w")

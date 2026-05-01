@@ -1,127 +1,126 @@
 <?php
 /**
  * salary_calculator.php
- * Pure salary logic — no Firebase, no PDF, no mail.
- * Called by cron_job.php and webhook.php.
+ * Religion-based bonus dates. Bonus amount hidden from employee app.
  *
  * Bonus Rule:
- *   - Paid ONCE per year, in MARCH salary only.
- *   - Employee must have worked >= 240 days in the PREVIOUS calendar year.
- *   - Bonus Amount = Base Salary - (Absent Days x Daily Rate)
- *     i.e. one full month salary with ONLY absent-day cuts.
- *     Half-days, OT, advance, deductions are NOT part of bonus calculation.
+ *   - Each religion has its own bonus month configured in Firestore settings/bonus_dates.
+ *   - Employee must have worked >= bonus_min_days in previous calendar year.
+ *   - Bonus = Base Salary - (Absent Days x Daily Rate)  [only absent cuts]
+ *   - Salary record stores:
+ *       annual_bonus  => amount   (admin/HR/CA see this)
+ *       bonus_paid    => true/false (employee app sees ONLY this boolean)
  */
 
-define('OT_MULTIPLIER',   1.5);
-define('WORKING_DAYS',    26);    // overridden by settings
-define('BONUS_MIN_DAYS',  240);   // minimum days previous year
+define('OT_MULTIPLIER',  1.5);
+define('WORKING_DAYS',   26);
+define('BONUS_MIN_DAYS', 240);
+
+$MONTH_MAP = [
+    'January'=>1,'February'=>2,'March'=>3,'April'=>4,
+    'May'=>5,'June'=>6,'July'=>7,'August'=>8,
+    'September'=>9,'October'=>10,'November'=>11,'December'=>12
+];
 
 
 /**
- * Calculate bonus amount.
- *
- * Bonus = Base Salary - (absent_days * daily_rate)
- *
- * @param float $base_salary
- * @param float $absent_days  actual absent day count for the bonus month
- * @param int   $working_days
- * @return float
+ * Load bonus date config from Firestore settings/bonus_dates.
+ * Returns array keyed by religion (lowercase).
  */
-function calculateBonus(float $base_salary, float $absent_days, int $working_days = WORKING_DAYS): float
+function getBonusConfig(array $settings): array
 {
-    $daily_rate   = $base_salary / $working_days;
-    $absent_cut   = $absent_days * $daily_rate;
-    $bonus_amount = $base_salary - $absent_cut;
-    return round(max($bonus_amount, 0), 2);
+    return $settings['bonus_dates'] ?? [];
 }
 
 
 /**
- * Check if employee is eligible for annual bonus.
- * Eligibility: worked >= BONUS_MIN_DAYS in previous calendar year.
- *
- * @param string $employee_id
- * @param int    $current_year
- * @param array  $all_sessions  all session records (pre-fetched)
- * @return bool
+ * Is this month the bonus month for this employee's religion?
  */
-function isBonusEligible(string $employee_id, int $current_year, array $all_sessions): bool
-{
+function isBonusMonthForReligion(
+    string $religion,
+    int    $month,
+    array  $bonus_config,
+    array  $month_map
+): bool {
+    $key  = strtolower($religion ?: 'other');
+    $conf = $bonus_config[$key] ?? $bonus_config['other'] ?? [];
+    if (empty($conf) || !($conf['enabled'] ?? false)) return false;
+    $bonus_month = $month_map[$conf['month'] ?? 'March'] ?? 3;
+    return $month === $bonus_month;
+}
+
+
+/**
+ * Check if employee worked >= min_days in previous calendar year.
+ */
+function isBonusEligible(
+    string $employee_id,
+    int    $current_year,
+    array  $all_sessions,
+    int    $min_days = BONUS_MIN_DAYS
+): bool {
     $prev_year  = $current_year - 1;
     $total_days = 0.0;
-
     foreach ($all_sessions as $s) {
         if ($s['employee_id'] !== $employee_id) continue;
         $session_year = (int) date('Y', strtotime($s['date'] ?? ''));
         if ($session_year !== $prev_year) continue;
-
         $total_days += match ($s['duty_status'] ?? '') {
-            'full' => 1.0,
-            'half' => 0.5,
+            'full'  => 1.0,
+            'half'  => 0.5,
             default => 0.0,
         };
     }
-
-    return $total_days >= BONUS_MIN_DAYS;
+    return $total_days >= $min_days;
 }
 
 
 /**
- * Count paid Sundays for a given employee + month.
- *
- * Sunday Rule:
- *   Sat present + Mon present  => 1.0 (full pay)
- *   Sat present + Mon absent   => 0.5 (half pay)
- *   Sat absent                 => 0.0 (no pay, even if Mon present)
- *
- * @param string $employee_id
- * @param int    $month
- * @param int    $year
- * @param array  $sessions_map  [date_string => session_record]
- * @return float
+ * Bonus amount = Base Salary - (absent_days x daily_rate).
+ * Only absent cuts. No OT, no advance, no half-day credit.
  */
-function countPaidSundays(string $employee_id, int $month, int $year, array $sessions_map): float
+function calculateBonus(float $base, float $absent_days, int $working_days = WORKING_DAYS): float
 {
-    $paid = 0.0;
-    $days_in_month = cal_days_in_month(CAL_GREGORIAN, $month, $year);
+    $daily = $base / $working_days;
+    return round(max($base - $absent_days * $daily, 0), 2);
+}
 
-    for ($d = 1; $d <= $days_in_month; $d++) {
-        $ts        = mktime(0, 0, 0, $month, $d, $year);
-        $day_of_wk = (int) date('N', $ts);   // 1=Mon .. 7=Sun
 
-        if ($day_of_wk !== 7) continue;   // only Sundays
+/**
+ * Count paid Sundays using Saturday+Monday rule.
+ */
+function countPaidSundays(int $month, int $year, array $sessions_map): float
+{
+    $paid  = 0.0;
+    $days  = cal_days_in_month(CAL_GREGORIAN, $month, $year);
+    for ($d = 1; $d <= $days; $d++) {
+        $ts  = mktime(0,0,0,$month,$d,$year);
+        $dow = (int) date('N', $ts);
+        if ($dow !== 7) continue;
 
-        $sat_date = date('Y-m-d', mktime(0, 0, 0, $month, $d - 1, $year));
-        $mon_date = date('Y-m-d', mktime(0, 0, 0, $month, $d + 1, $year));
+        $sat = date('Y-m-d', mktime(0,0,0,$month,$d-1,$year));
+        $mon = date('Y-m-d', mktime(0,0,0,$month,$d+1,$year));
 
-        $sat_status = $sessions_map[$sat_date]['duty_status'] ?? 'absent';
-        $mon_status = $sessions_map[$mon_date]['duty_status'] ?? 'absent';
+        $sat_ok = in_array($sessions_map[$sat]['duty_status'] ?? '', ['full','half']);
+        $mon_ok = in_array($sessions_map[$mon]['duty_status'] ?? '', ['full','half']);
 
-        $sat_present = in_array($sat_status, ['full', 'half']);
-        $mon_present = in_array($mon_status, ['full', 'half']);
-
-        if ($sat_present && $mon_present) {
-            $paid += 1.0;
-        } elseif ($sat_present && !$mon_present) {   // CORRECT: Sat only = half pay
-            $paid += 0.5;
-        }
-        // else: $sat absent => no Sunday pay
+        if ($sat_ok && $mon_ok)       $paid += 1.0;
+        elseif ($sat_ok && !$mon_ok)  $paid += 0.5;
     }
-
     return $paid;
 }
 
 
 /**
- * Main salary calculation for one employee for one month.
+ * Full salary calculation for one employee for one month.
  *
- * @param array $employee      employee record from Firestore
- * @param array $month_sessions session records for this employee + month
- * @param array $all_sessions   all sessions (for bonus eligibility check)
+ * @param array $employee        employee record
+ * @param array $month_sessions  sessions for this month
+ * @param array $all_sessions    all sessions (for bonus eligibility)
  * @param int   $month
  * @param int   $year
- * @param int   $working_days
- * @return array  salary components
+ * @param array $settings        app + bonus_dates settings
+ * @return array
  */
 function calculateSalary(
     array $employee,
@@ -129,82 +128,77 @@ function calculateSalary(
     array $all_sessions,
     int   $month,
     int   $year,
-    int   $working_days = WORKING_DAYS
+    array $settings = []
 ): array {
-    $base_salary = (float) ($employee['salary'] ?? 0);
-    $advance     = (float) ($employee['advance']  ?? 0);  // outstanding advance
+    global $MONTH_MAP;
 
-    // ── Attendance ──────────────────────────────────────────────────────────
-    $full_days  = 0.0;
-    $half_days  = 0.0;
-    $ot_full    = 0.0;
-    $ot_half    = 0.0;
+    $working_days = (int) ($settings['app']['working_days'] ?? WORKING_DAYS);
+    $ot_rate      = (float) ($settings['app']['ot_multiplier'] ?? OT_MULTIPLIER);
+    $min_days     = (int) ($settings['app']['bonus_min_days'] ?? BONUS_MIN_DAYS);
+    $bonus_config = $settings['bonus_dates'] ?? [];
 
-    // Build sessions map [date => session] for Sunday rule
+    $base_salary = (float) ($employee['salary']  ?? 0);
+    $advance     = (float) ($employee['advance'] ?? 0);
+    $religion    = $employee['religion'] ?? 'Other';
+
+    // Attendance
+    $full = $half = $ot_full = $ot_half = 0.0;
     $sessions_map = [];
     foreach ($month_sessions as $s) {
         $sessions_map[$s['date'] ?? ''] = $s;
-        $status = $s['duty_status'] ?? 'absent';
-        if ($status === 'full')      $full_days += 1.0;
-        elseif ($status === 'half')  $half_days += 1.0;
-
-        $ot_status = $s['ot_status'] ?? 'none';
-        if ($ot_status === 'full')       $ot_full += 1.0;
-        elseif ($ot_status === 'half')   $ot_half += 1.0;
+        $st = $s['duty_status'] ?? 'absent';
+        if ($st === 'full')      $full++;
+        elseif ($st === 'half')  $half++;
+        $ot = $s['ot_status'] ?? 'none';
+        if ($ot === 'full')      $ot_full++;
+        elseif ($ot === 'half')  $ot_half++;
     }
 
-    $paid_sundays = countPaidSundays(
-        $employee['employee_id'], $month, $year, $sessions_map
-    );
+    $paid_sundays = countPaidSundays($month, $year, $sessions_map);
+    $absent_days  = max(0, $working_days - $full - $half * 0.5);
+    $att_ratio    = ($full + $half * 0.5 + $paid_sundays) / $working_days;
+    $att_salary   = round($base_salary * $att_ratio, 2);
 
-    $absent_days = max(0, $working_days - $full_days - ($half_days * 0.5));
-
-    $attendance_ratio  = ($full_days + $half_days * 0.5 + $paid_sundays) / $working_days;
-    $attendance_salary = round($base_salary * $attendance_ratio, 2);
-
-    // ── OT ──────────────────────────────────────────────────────────────────
+    // OT
     $ot_units  = $ot_full + $ot_half * 0.5;
-    $daily_rate = $base_salary / $working_days;
-    $ot_pay     = round($ot_units * $daily_rate * OT_MULTIPLIER, 2);
+    $daily     = $base_salary / $working_days;
+    $ot_pay    = round($ot_units * $daily * $ot_rate, 2);
 
-    // ── Annual Bonus (March only) ────────────────────────────────────────────
-    $annual_bonus    = 0.0;
-    $bonus_eligible  = false;
-
-    if ($month === 3) {
-        $bonus_eligible = isBonusEligible($employee['employee_id'], $year, $all_sessions);
+    // Bonus — religion-based month check
+    $annual_bonus   = 0.0;
+    $bonus_eligible = false;
+    if (isBonusMonthForReligion($religion, $month, $bonus_config, $MONTH_MAP)) {
+        $bonus_eligible = isBonusEligible(
+            $employee['employee_id'], $year, $all_sessions, $min_days
+        );
         if ($bonus_eligible) {
-            // Bonus = 1 month salary with ONLY absent-day cuts
-            // Half-days credit, OT, advance, deductions are NOT included
             $annual_bonus = calculateBonus($base_salary, $absent_days, $working_days);
         }
     }
 
-    // ── Final ────────────────────────────────────────────────────────────────
-    $final_salary = round(
-        $attendance_salary + $ot_pay + $annual_bonus - $advance,
-        2
-    );
+    $final = round($att_salary + $ot_pay + $annual_bonus - $advance, 2);
 
     return [
         'employee_id'        => $employee['employee_id'],
         'name'               => $employee['name'],
+        'religion'           => $religion,
         'month'              => $month,
         'year'               => $year,
         'base_salary'        => $base_salary,
-        'full_days'          => $full_days,
-        'half_days'          => $half_days,
+        'full_days'          => $full,
+        'half_days'          => $half,
         'absent_days'        => round($absent_days, 2),
         'paid_holidays'      => $paid_sundays,
         'ot_full_days'       => $ot_full,
         'ot_half_days'       => $ot_half,
         'ot_day_units'       => $ot_units,
         'ot_pay'             => $ot_pay,
-        'attendance_salary'  => $attendance_salary,
-        'annual_bonus'       => $annual_bonus,
+        'attendance_salary'  => $att_salary,
+        'annual_bonus'       => $annual_bonus,    // ADMIN/HR/CA only
+        'bonus_paid'         => $annual_bonus > 0, // employee app sees ONLY this
         'bonus_eligible'     => $bonus_eligible,
         'advance'            => $advance,
-        'final_salary'       => $final_salary,
+        'final_salary'       => $final,
         'payment_mode'       => $employee['payment_mode'] ?? 'CASH',
     ];
 }
