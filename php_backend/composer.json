@@ -1,15 +1,16 @@
 {
   "name": "nexuzylab/hype-hr-backend",
-  "description": "Hype HR Management System — PHP Automation Backend",
+  "description": "Hype HR Management System \u2014 PHP Automation Backend",
   "type": "project",
   "require": {
     "php": ">=7.4",
     "phpmailer/phpmailer": "^6.8",
-    "setasign/fpdf": "^1.8"
+    "setasign/fpdf": "^1.8",
+    "vlucas/phpdotenv": "^5.5"
   },
   "autoload": {
     "psr-4": {
-      "HypeHR\\": "src/"
+      "HypeHR\\\\": "src/"
     }
   }
 }

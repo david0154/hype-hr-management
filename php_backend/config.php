@@ -1,48 +1,64 @@
 <?php
 /**
- * Hype HR Management — PHP Backend Configuration
+ * Hype HR Management \u2014 PHP Backend Configuration
+ * Loads .env via vlucas/phpdotenv when available.
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 
-// ── Firebase ─────────────────────────────────────────────────────────────────
-define('FIREBASE_PROJECT_ID',    getenv('FIREBASE_PROJECT_ID')    ?: 'hype-hr-management');
-define('FIREBASE_STORAGE_BUCKET',getenv('FIREBASE_STORAGE_BUCKET') ?: 'hype-hr-management.appspot.com');
-define('SERVICE_ACCOUNT_PATH',   getenv('FIREBASE_SERVICE_JSON')  ?: __DIR__ . '/firebase-service-account.json');
+// \u2500\u2500 Load .env (if phpdotenv is available) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+    if (class_exists('\\Dotenv\\Dotenv') && file_exists(__DIR__ . '/.env')) {
+        $dotenv = \Dotenv\Dotenv::createImmutable(__DIR__);
+        $dotenv->safeLoad();
+    }
+}
 
-// ── PDF & Storage ─────────────────────────────────────────────────────────────
+// \u2500\u2500 Firebase \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+define('FIREBASE_PROJECT_ID',    $_ENV['FIREBASE_PROJECT_ID']     ?? getenv('FIREBASE_PROJECT_ID')     ?: 'hype-hr-management');
+define('FIREBASE_STORAGE_BUCKET',$_ENV['FIREBASE_STORAGE_BUCKET'] ?? getenv('FIREBASE_STORAGE_BUCKET') ?: 'hype-hr-management.appspot.com');
+define('SERVICE_ACCOUNT_PATH',   $_ENV['FIREBASE_SERVICE_JSON']   ?? getenv('FIREBASE_SERVICE_JSON')   ?: __DIR__ . '/firebase-service-account.json');
+
+// \u2500\u2500 API Secret (protect endpoints) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+define('API_SECRET', $_ENV['API_SECRET'] ?? getenv('API_SECRET') ?: 'change-this-secret');
+
+// \u2500\u2500 PDF & Storage \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n// FIREBASE_STORAGE_BUCKET and SERVICE_ACCOUNT_PATH are defined above
 define('PDF_TEMP_DIR',         __DIR__ . '/temp/');
 define('SLIP_RETENTION_MONTHS', 12);   // Slips older than 12 months auto-deleted
 
-// ── Salary Rules (12-hour working day) ───────────────────────────────────────
+// \u2500\u2500 Salary Rules (12-hour working day) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 define('WORKING_HOURS_PER_DAY',  12);  // Full shift = 12 hrs
 define('DUTY_HALF_MIN_HOURS',     4);  // >= 4h and < 7h = Half Day
 define('DUTY_FULL_MIN_HOURS',     7);  // >= 7h = Full Day (< 4h = Absent)
 define('OT_HALF_MIN_HOURS',       4);  // >= 4h and < 7h = Half OT
 define('OT_FULL_MIN_HOURS',       7);  // >= 7h = Full OT  (< 4h = No OT)
-define('DEFAULT_OT_MULTIPLIER',  1.5); // OT pay = hours × (base/workdays/12) × 1.5
+define('DEFAULT_OT_MULTIPLIER',  1.5); // OT pay = hours x (base/workdays/12) x 1.5
 define('DEFAULT_WORKING_DAYS',   26);  // Standard working days/month
 
-// ── SMTP defaults (overridden at runtime from Firestore settings/smtp) ────────
-define('SMTP_DEFAULT_HOST',      getenv('SMTP_HOST')  ?: 'smtp.gmail.com');
-define('SMTP_DEFAULT_PORT',      (int)(getenv('SMTP_PORT') ?: 587));
-define('SMTP_DEFAULT_USER',      getenv('SMTP_USER')  ?: '');
-define('SMTP_DEFAULT_PASS',      getenv('SMTP_PASS')  ?: '');
-define('SMTP_DEFAULT_FROM',      getenv('SMTP_FROM')  ?: '');
-define('SMTP_DEFAULT_FROM_NAME', getenv('SMTP_FROM_NAME') ?: 'Hype HR Management');
+// \u2500\u2500 SMTP defaults (overridden at runtime from Firestore settings/smtp) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+define('SMTP_DEFAULT_HOST',      $_ENV['SMTP_HOST']      ?? getenv('SMTP_HOST')      ?: 'smtp.gmail.com');
+define('SMTP_DEFAULT_PORT',      (int)(  $_ENV['SMTP_PORT']  ?? getenv('SMTP_PORT')  ?: 587));
+define('SMTP_DEFAULT_USER',      $_ENV['SMTP_USER']      ?? getenv('SMTP_USER')      ?: '');
+define('SMTP_DEFAULT_PASS',      $_ENV['SMTP_PASS']      ?? getenv('SMTP_PASS')      ?: '');
+define('SMTP_DEFAULT_FROM',      $_ENV['SMTP_FROM']      ?? getenv('SMTP_FROM')      ?: '');
+define('SMTP_DEFAULT_FROM_NAME', $_ENV['SMTP_FROM_NAME'] ?? getenv('SMTP_FROM_NAME') ?: 'Hype HR Management');
 
-// ── SMS (optional — Twilio) ───────────────────────────────────────────────────
-define('SMS_ENABLED',  (bool)(getenv('SMS_ENABLED')  ?: false));
-define('SMS_PROVIDER', getenv('SMS_PROVIDER') ?: 'twilio');
-define('TWILIO_SID',   getenv('TWILIO_SID')   ?: '');
-define('TWILIO_TOKEN', getenv('TWILIO_TOKEN') ?: '');
-define('TWILIO_FROM',  getenv('TWILIO_FROM')  ?: '');
+// \u2500\u2500 SMS (optional \u2014 Twilio / Fast2SMS / MSG91) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+$_smsEnabled  = $_ENV['SMS_ENABLED']  ?? getenv('SMS_ENABLED')  ?? 'false';
+define('SMS_ENABLED',   filter_var($_smsEnabled, FILTER_VALIDATE_BOOLEAN));
+define('SMS_PROVIDER',  $_ENV['SMS_PROVIDER']  ?? getenv('SMS_PROVIDER')  ?: '');
+define('SMS_API_KEY',   $_ENV['SMS_API_KEY']   ?? getenv('SMS_API_KEY')   ?: '');
+// Twilio-specific
+define('TWILIO_SID',    $_ENV['SMS_ACCOUNT_SID'] ?? getenv('SMS_ACCOUNT_SID') ?? getenv('TWILIO_SID')   ?: '');
+define('TWILIO_TOKEN',  $_ENV['SMS_AUTH_TOKEN']  ?? getenv('SMS_AUTH_TOKEN')  ?? getenv('TWILIO_TOKEN') ?: '');
+define('TWILIO_FROM',   $_ENV['SMS_FROM_NUMBER'] ?? getenv('SMS_FROM_NUMBER') ?? getenv('TWILIO_FROM')  ?: '');
 
-// ── Branding ──────────────────────────────────────────────────────────────────
+// \u2500\u2500 Branding \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 define('DEV_GITHUB',    'github.com/david0154');
 define('SUPPORT_MAIL',  'nexuzylab@gmail.com');
 
-// ── Cron lock ─────────────────────────────────────────────────────────────────
+// \u2500\u2500 Cron lock \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 define('CRON_LOCK_FILE', sys_get_temp_dir() . '/hype_hr_cron.lock');
 
-// ── Ensure temp dir exists ────────────────────────────────────────────────────
+// \u2500\u2500 Ensure temp dir exists \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 if (!is_dir(PDF_TEMP_DIR)) mkdir(PDF_TEMP_DIR, 0755, true);
