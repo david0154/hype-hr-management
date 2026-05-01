@@ -29,8 +29,8 @@ import java.util.*
  *
  * Sunday rule:
  *   Sat ✔ + Mon ✔ → Full Pay (paidHolidays + 1)
- *   Sat ✔ or Mon ✔ → Half Pay (paidHolidays + 0.5)
- *   Sat ✗ + Mon ✗ → No Pay
+ *   Sat ✔ + Mon ✗ → Half Pay (paidHolidays + 0.5)
+ *   Sat ✗ + Mon any → No Pay
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
@@ -47,7 +47,6 @@ class SalarySlipAutoGenerateWorker(
         val tz = TimeZone.getTimeZone("Asia/Kolkata")
         val now = Calendar.getInstance(tz)
 
-        // Only run on the 1st of the month
         if (now.get(Calendar.DAY_OF_MONTH) != 1) {
             Log.d(TAG, "Not 1st of month — skipping")
             return Result.success()
@@ -57,22 +56,20 @@ class SalarySlipAutoGenerateWorker(
 
         return try {
             val prevCal = Calendar.getInstance(tz).apply { add(Calendar.MONTH, -1) }
-            val monthKey   = fmt.format(prevCal.time)         // e.g. "2026-04"
+            val monthKey   = fmt.format(prevCal.time)
             val monthName  = SimpleDateFormat("MMMM", Locale.getDefault()).format(prevCal.time)
-            val year       = SimpleDateFormat("yyyy",  Locale.getDefault()).format(prevCal.time)
+            val year       = SimpleDateFormat("yyyy", Locale.getDefault()).format(prevCal.time)
             val targetMonth = prevCal.get(Calendar.MONTH) + 1
             val targetYear  = prevCal.get(Calendar.YEAR)
 
-            // Fetch settings
             val settingsDoc = db.collection("settings").document("app").get().await()
             val settings = settingsDoc.data ?: emptyMap()
-            val workingDays  = (settings["monthly_working_days"] as? Number)?.toInt()    ?: 26
-            val otMultiplier = (settings["ot_rate_multiplier"]   as? Number)?.toDouble() ?: 1.5
+            val workingDays  = (settings["monthly_working_days"] as? Number)?.toInt() ?: 26
+            val otMultiplier = (settings["ot_rate_multiplier"] as? Number)?.toDouble() ?: 1.5
 
             val companyDoc = db.collection("settings").document("company").get().await()
             val company = companyDoc.data ?: emptyMap<String, Any>()
 
-            // Fetch all active employees
             val empSnap = db.collection("employees")
                 .whereEqualTo("is_active", true)
                 .get().await()
@@ -84,17 +81,18 @@ class SalarySlipAutoGenerateWorker(
                 val empId = emp["employee_id"] as? String ?: continue
 
                 try {
-                    // Skip if already generated
                     val existing = db.collection("salary")
                         .document("${empId}_${monthKey}")
                         .get().await()
-                    if (existing.exists()) { Log.d(TAG, "$empId: already generated"); continue }
+                    if (existing.exists()) {
+                        Log.d(TAG, "$empId: already generated")
+                        continue
+                    }
 
-                    // Fetch sessions for previous month
                     val sessionSnap = db.collection("sessions")
                         .whereEqualTo("employee_id", empId)
                         .whereGreaterThanOrEqualTo("date", "$monthKey-01")
-                        .whereLessThanOrEqualTo("date",   "$monthKey-31")
+                        .whereLessThanOrEqualTo("date", "$monthKey-31")
                         .get().await()
 
                     var fullDays = 0.0; var halfDays = 0.0
@@ -105,9 +103,11 @@ class SalarySlipAutoGenerateWorker(
                         val s = sDoc.data ?: continue
                         val date  = s["date"] as? String ?: continue
                         val duty  = (s["duty_hours"] as? Number)?.toDouble() ?: 0.0
-                        val ot    = (s["ot_hours"]   as? Number)?.toDouble() ?: 0.0
+                        val ot    = (s["ot_hours"] as? Number)?.toDouble() ?: 0.0
 
-                        presentDates.add(date)
+                        if (duty >= 4.0) {
+                            presentDates.add(date)
+                        }
 
                         when {
                             duty >= 7 -> fullDays++
@@ -116,12 +116,10 @@ class SalarySlipAutoGenerateWorker(
                         }
                         when {
                             ot >= 7 -> otHours += ot
-                            ot >= 4 -> otHours += ot * 0.5
-                            // < 4 = no OT
+                            ot >= 4 -> otHours += 4.0
                         }
                     }
 
-                    // Sunday rule
                     var paidHolidays = 0.0
                     val daysInMonth = getDaysInMonth(targetYear, targetMonth)
                     for (day in 1..daysInMonth) {
@@ -132,71 +130,68 @@ class SalarySlipAutoGenerateWorker(
                         if (cal.get(Calendar.DAY_OF_WEEK) != Calendar.SUNDAY) continue
 
                         val satCal = (cal.clone() as Calendar).apply { add(Calendar.DATE, -1) }
-                        val monCal = (cal.clone() as Calendar).apply { add(Calendar.DATE, +1) }
+                        val monCal = (cal.clone() as Calendar).apply { add(Calendar.DATE, 1) }
                         val satDate = dateFmt.format(satCal.time)
                         val monDate = dateFmt.format(monCal.time)
                         val satOk = presentDates.contains(satDate)
                         val monOk = presentDates.contains(monDate)
 
                         paidHolidays += when {
-                            satOk && monOk -> 1.0
-                            satOk || monOk -> 0.5
-                            else           -> 0.0
+                            satOk && monOk  -> 1.0
+                            satOk && !monOk -> 0.5
+                            else            -> 0.0
                         }
                     }
 
-                    // Fetch adjustments
                     val adjSnap = db.collection("salary_adjustments")
                         .whereEqualTo("employee_id", empId)
-                        .whereEqualTo("month_key",   monthKey)
+                        .whereEqualTo("month_key", monthKey)
                         .get().await()
                     var bonus = 0.0; var deduction = 0.0; var advance = 0.0
                     for (a in adjSnap.documents) {
                         val ad = a.data ?: continue
-                        bonus     += (ad["bonus"]     as? Number)?.toDouble() ?: 0.0
+                        bonus     += (ad["bonus"] as? Number)?.toDouble() ?: 0.0
                         deduction += (ad["deduction"] as? Number)?.toDouble() ?: 0.0
-                        advance   += (ad["advance"]   as? Number)?.toDouble() ?: 0.0
+                        advance   += (ad["advance"] as? Number)?.toDouble() ?: 0.0
                     }
 
-                    // Salary formula
                     val baseSalary      = (emp["salary"] as? Number)?.toDouble() ?: 0.0
                     val effectiveDays   = fullDays + (halfDays * 0.5) + paidHolidays
-                    val attendanceRatio = if (workingDays > 0)
-                        (effectiveDays / workingDays).coerceAtMost(1.0) else 0.0
+                    val attendanceRatio = if (workingDays > 0) {
+                        (effectiveDays / workingDays).coerceAtMost(1.0)
+                    } else 0.0
                     val attSalary  = baseSalary * attendanceRatio
-                    val dailyRate  = if (workingDays > 0) baseSalary / workingDays else 0.0
-                    val hourlyRate = dailyRate / 8.0
+                    val hourlyRate = if (workingDays > 0) baseSalary / workingDays / 12.0 else 0.0
                     val otPay      = otHours * hourlyRate * otMultiplier
                     val finalSal   = (attSalary + otPay + bonus - deduction - advance).coerceAtLeast(0.0)
 
-                    // Save to Firestore
                     val salaryMap = mapOf(
-                        "employee_id"       to empId,
-                        "name"              to (emp["name"]         ?: ""),
-                        "designation"       to (emp["designation"]  ?: "Employee"),
-                        "company_name"      to (company["name"]     ?: "Hype Pvt Ltd"),
-                        "company_address"   to (company["address"]  ?: ""),
-                        "month"             to monthName,
-                        "year"              to year,
-                        "month_key"         to monthKey,
-                        "base_salary"       to baseSalary,
+                        "employee_id" to empId,
+                        "name" to (emp["name"] ?: ""),
+                        "designation" to (emp["designation"] ?: "Employee"),
+                        "company_name" to (company["name"] ?: "Hype Pvt Ltd"),
+                        "company_address" to (company["address"] ?: ""),
+                        "month" to monthName,
+                        "year" to year,
+                        "month_key" to monthKey,
+                        "base_salary" to baseSalary,
                         "attendance_salary" to attSalary,
-                        "ot_pay"            to otPay,
-                        "bonus"             to bonus,
-                        "deduction"         to deduction,
-                        "advance"           to advance,
-                        "final_salary"      to finalSal,
-                        "total_present"     to fullDays,
-                        "half_days"         to halfDays,
-                        "absent_days"       to absentDays,
-                        "paid_holidays"     to paidHolidays,
-                        "ot_hours"          to otHours,
-                        "working_days"      to workingDays,
-                        "payment_mode"      to (emp["payment_mode"] ?: "CASH"),
-                        "slip_url"          to "",  // PHP cron fills after PDF upload
-                        "generated_at"      to com.google.firebase.Timestamp.now(),
-                        "source"            to "android_worker",
-                        "expires_at"        to getExpiryTimestamp()
+                        "ot_pay" to otPay,
+                        "bonus" to bonus,
+                        "deduction" to deduction,
+                        "advance" to advance,
+                        "final_salary" to finalSal,
+                        "total_present" to fullDays,
+                        "half_days" to halfDays,
+                        "absent_days" to absentDays,
+                        "paid_holidays" to paidHolidays,
+                        "ot_hours" to otHours,
+                        "working_days" to workingDays,
+                        "payment_mode" to (emp["payment_mode"] ?: "CASH"),
+                        "slip_url" to "",
+                        "generated_at" to com.google.firebase.Timestamp.now(),
+                        "source" to "android_worker",
+                        "expires_at" to getExpiryTimestamp()
                     )
                     db.collection("salary")
                         .document("${empId}_${monthKey}")

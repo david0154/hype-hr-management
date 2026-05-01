@@ -244,8 +244,8 @@ class HypeFirebaseAPI {
      *
      * Sunday Rule:
      *   Saturday present AND Monday present → Sunday = Full paid holiday (1.0)
-     *   Saturday present OR  Monday present  → Sunday = Half paid holiday (0.5)
-     *   Saturday absent  AND Monday absent   → Sunday = No pay            (0.0)
+     *   Saturday present + Monday absent    → Sunday = Half paid holiday (0.5)
+     *   Saturday absent  AND Monday absent  → Sunday = No pay            (0.0)
      */
     public function getAttendanceSummary(string $employeeId, int $year, int $month): array {
         $sessions = $this->getCollection('sessions');
@@ -293,7 +293,7 @@ class HypeFirebaseAPI {
 
             if ($satPresent && $monPresent) {
                 $paidHolidays += 1.0; // Full Sunday pay
-            } elseif ($satPresent || $monPresent) {
+            } elseif ($satPresent && !$monPresent) {
                 $paidHolidays += 0.5; // Half Sunday pay
             }
             // else: no pay — nothing added
