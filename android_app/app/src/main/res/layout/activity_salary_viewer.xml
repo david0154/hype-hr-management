@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="32dp"
+    android:background="@color/colorBackground">
+
+    <TextView android:id="@+id/tvMsg"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Opening salary slip..."
+        android:textSize="16sp" android:textColor="@color/colorText"
+        android:gravity="center" android:layout_marginBottom="32dp"
+        android:lineSpacingMultiplier="1.4"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnOpen"
+        android:layout_width="match_parent" android:layout_height="56dp"
+        android:text="Open / Download PDF"
+        app:cornerRadius="12dp"/>
+
+</LinearLayout>

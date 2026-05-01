@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/colorBackground">
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="@color/colorPrimaryDark"
+        app:titleTextColor="@color/white"
+        app:title="Security Panel"/>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:gravity="center"
+        android:padding="24dp">
+
+        <TextView android:id="@+id/tvSecUser"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="Logged in: —" android:textSize="14sp"
+            android:textColor="@color/colorTextMuted"
+            android:layout_marginBottom="32dp" android:gravity="center"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnScanEmployeeIn"
+            android:layout_width="match_parent" android:layout_height="64dp"
+            android:text="→ Mark Employee IN" android:textSize="16sp"
+            android:layout_marginBottom="16dp" app:cornerRadius="14dp"
+            app:backgroundTint="@color/colorSuccess"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnScanEmployeeOut"
+            android:layout_width="match_parent" android:layout_height="64dp"
+            android:text="← Mark Employee OUT" android:textSize="16sp"
+            android:layout_marginBottom="32dp" app:cornerRadius="14dp"
+            app:backgroundTint="@color/colorError"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSecLogout"
+            android:layout_width="match_parent" android:layout_height="52dp"
+            android:text="Logout"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            app:strokeColor="@color/colorPrimary" app:cornerRadius="12dp"/>
+
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/colorBackground">
+
+    <!-- Camera Preview -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="@color/colorSurface">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tap Scan QR to begin"
+            android:textSize="16sp"
+            android:textColor="@color/colorText"
+            android:gravity="center"
+            android:layout_marginBottom="16dp"
+            android:minLines="2"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnScanQr"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="@string/btn_scan_qr"
+            app:cornerRadius="12dp"
+            xmlns:app="http://schemas.android.com/apk/res-auto"
+            android:layout_marginBottom="12dp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnIn"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:text="@string/btn_check_in"
+                android:enabled="false"
+                android:layout_marginEnd="8dp"
+                xmlns:app="http://schemas.android.com/apk/res-auto"
+                app:cornerRadius="12dp"
+                app:backgroundTint="@color/colorSuccess"/>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnOut"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:text="@string/btn_check_out"
+                android:enabled="false"
+                xmlns:app="http://schemas.android.com/apk/res-auto"
+                app:cornerRadius="12dp"
+                app:backgroundTint="@color/colorError"/>
+
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
