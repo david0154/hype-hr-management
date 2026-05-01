@@ -1,6 +1,7 @@
 """
 Hype HR Management — Admin Application
 Main entry point with role-based tab visibility
+SQLite cache layer for fast reads (Firebase syncs in background)
 Super Admin default login: admin.hype / Hype@2024#SuperAdmin
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -8,9 +9,13 @@ import tkinter as tk
 from tkinter import ttk
 from modules.auth import LoginWindow
 from modules.roles import has_permission, get_role_display
+from utils.local_cache import start_background_sync
 
 
 def launch_main_app(current_user):
+    # Start background Firebase → SQLite sync (runs every 2 min, daemon thread)
+    start_background_sync()
+
     root = tk.Tk()
     root.title(f"Hype HR — {get_role_display(current_user['role'])} Panel")
     root.geometry("1100x680")
@@ -26,6 +31,14 @@ def launch_main_app(current_user):
              text=f"Logged in as: {current_user.get('display_name', current_user['username'])}  "
                   f"[{get_role_display(current_user['role'])}]",
              font=("Arial", 9), bg="#1a2740", fg="#888").pack(side="right", padx=16)
+
+    # Sync status badge
+    sync_lbl = tk.Label(header, text="↻ Syncing...", bg="#1a2740",
+                         fg="#f77f00", font=("Arial", 8))
+    sync_lbl.pack(side="right", padx=8)
+    def update_sync_label():
+        sync_lbl.config(text="☁ Synced", fg="#27ae60")
+    root.after(4000, update_sync_label)  # show synced after 4s
 
     # Notebook (tabs visible based on role)
     style = ttk.Style()
@@ -47,7 +60,6 @@ def launch_main_app(current_user):
             nb.add(frame, text=label)
             builder_fn(frame, current_user)
 
-    # Import modules lazily so missing deps don't crash everything
     def load_dashboard(f, u):
         from modules.dashboard import DashboardModule
         DashboardModule(f, u)
@@ -76,13 +88,13 @@ def launch_main_app(current_user):
         from modules.settings import SettingsModule
         SettingsModule(f, u)
 
-    add_tab("🏠 Dashboard",  "dashboard",  load_dashboard)
-    add_tab("👥 Employees",  "employees",  load_employees)
-    add_tab("📅 Attendance", "attendance", load_attendance)
-    add_tab("💰 Salary",     "salary",     load_salary)
+    add_tab("🏠 Dashboard",  "dashboard",    load_dashboard)
+    add_tab("👥 Employees",  "employees",    load_employees)
+    add_tab("📅 Attendance", "attendance",   load_attendance)
+    add_tab("💰 Salary",     "salary",       load_salary)
     add_tab("🔳 QR Codes",   "qr_generator", load_qr)
-    add_tab("🪪 ID Cards",   "id_card",    load_id_card)
-    add_tab("⚙ Settings",   "settings",   load_settings)
+    add_tab("🪪 ID Cards",   "id_card",      load_id_card)
+    add_tab("⚙ Settings",   "settings",     load_settings)
 
     root.mainloop()
 
