@@ -1,390 +1,476 @@
-"""
-Salary Module — Hype HR Management
-Bonus: Yearly only (based on total annual present days incl paid holidays)
-Salary Raise: CA can increase per-employee salary
-Role permissions: Admin=all, HR=view+bonus, CA=bonus+raise, Manager=view
-Developed by David | Nexuzy Lab | nexuzylab@gmail.com
-"""
+# salary.py — Salary Panel (Admin App)
+# Handles: Generate All, Advance Payment, Bonus (March auto), Salary Raise
+
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 from datetime import datetime, date
-import os, tempfile
-from utils.firebase_config import get_db, get_bucket
+from utils.db import read_all, write, update
 from utils.pdf_generator import generate_salary_slip
-from modules.attendance import calculate_monthly_summary
-from modules.roles import has_permission
-
-MONTH_NAMES = ["January","February","March","April","May","June",
-               "July","August","September","October","November","December"]
-
-# ── Bonus is yearly, based on total annual present days (incl paid holidays) ──
-# Bonus eligibility: >= MIN_DAYS_FOR_BONUS working days in the year
-MIN_DAYS_FOR_BONUS  = 240   # ~10 months full attendance
-BONUS_MONTH         = 3     # March (month number) — pay in March salary
-# Bonus amount stored per employee in Firestore field: annual_bonus_amount
-# Default fallback if not set: 0 (admin/HR/CA must configure per employee)
+import calendar
 
 
-def calculate_annual_present(employee_id: str, year: int) -> float:
-    """Sum all monthly present+half+paid_holidays for the year."""
-    db = get_db()
-    total = 0.0
-    for m in range(1, 13):
-        try:
-            summary = calculate_monthly_summary(employee_id, year, m)
-            total += summary.get("total_present", 0)
-            total += summary.get("half_days", 0) * 0.5
-            total += summary.get("paid_holidays", 0)
-        except Exception:
-            pass
-    return total
+# ─── Constants ───────────────────────────────────────────────────────────────
+OT_MULTIPLIER   = 1.5
+WORKING_DAYS    = 26   # default; overridden by settings
+BONUS_MIN_DAYS  = 240  # minimum days worked previous year for bonus eligibility
 
 
-def calculate_salary(employee: dict, summary: dict, ot_rate: float = 1.5,
-                     manual_bonus: float = 0, advance: float = 0,
-                     payment_mode: str = "CASH",
-                     month: int = None, year: int = None) -> dict:
-    base          = employee.get("salary", 0)
-    total_working = summary.get("total_working_days", 26)
-    present       = summary.get("total_present", 0)
-    half_days     = summary.get("half_days", 0)
-    paid_holidays = summary.get("paid_holidays", 0)
+# ─── Bonus Calculation ───────────────────────────────────────────────────────
+def calculate_bonus(base_salary, absent_days, working_days=WORKING_DAYS):
+    """
+    Annual Bonus (March only, if eligible).
 
-    paid_days        = present + (half_days * 0.5) + paid_holidays
-    attendance_ratio = min(paid_days / total_working, 1.0) if total_working > 0 else 0
-    attendance_salary = round(base * attendance_ratio, 2)
+    Rule:
+        Bonus = 1 month salary  BUT  only absent days are deducted.
+        Half-days, OT, advance, deductions are NOT included/excluded.
 
-    # OT — flat day-rate (not hourly)
-    ot_full_days = summary.get("ot_full_days", 0)
-    ot_half_days = summary.get("ot_half_days", 0)
-    ot_day_units = ot_full_days + (ot_half_days * 0.5)
-    daily_rate   = base / total_working if total_working else 0
-    ot_pay       = round(ot_day_units * daily_rate * ot_rate, 2)
+        Bonus = Base Salary - (Absent Days × Daily Rate)
+        Daily Rate = Base Salary / Working Days
 
-    # Bonus — yearly, paid in BONUS_MONTH only
-    bonus = 0.0
-    if month is not None and year is not None and month == BONUS_MONTH:
-        annual_days  = calculate_annual_present(employee.get("employee_id", ""), year - 1)
-        if annual_days >= MIN_DAYS_FOR_BONUS:
-            stored_bonus = float(employee.get("annual_bonus_amount", 0))
-            bonus        = manual_bonus if manual_bonus > 0 else stored_bonus
+    This gives the employee a clean month salary with only
+    absent-day cuts applied — nothing else.
+    """
+    daily_rate   = base_salary / working_days
+    absent_cut   = absent_days * daily_rate
+    bonus_amount = base_salary - absent_cut
+    return round(max(bonus_amount, 0), 2)
 
-    final_salary = round(attendance_salary + ot_pay + bonus - advance, 2)
+
+def is_bonus_eligible(employee_id, current_year):
+    """
+    Check if employee worked >= BONUS_MIN_DAYS in previous calendar year.
+    Reads from Firestore sessions collection.
+    """
+    prev_year = current_year - 1
+    sessions  = read_all("sessions", filters={
+        "employee_id": employee_id,
+        "year": prev_year
+    })
+    total_days = sum(
+        1.0 if s.get("duty_status") == "full" else
+        0.5 if s.get("duty_status") == "half" else 0.0
+        for s in sessions
+    )
+    return total_days >= BONUS_MIN_DAYS
+
+
+# ─── Salary Calculation ───────────────────────────────────────────────────────
+def calculate_salary(employee, month_sessions, month, year, working_days=WORKING_DAYS):
+    """
+    Full salary calculation for one employee for a given month.
+    Returns a dict with all components.
+    """
+    base_salary = float(employee.get("salary", 0))
+    advance     = float(employee.get("advance", 0))   # outstanding advance
+
+    # Attendance counts
+    full_days    = sum(1.0 for s in month_sessions if s.get("duty_status") == "full")
+    half_days    = sum(1.0 for s in month_sessions if s.get("duty_status") == "half")
+    absent_days  = working_days - full_days - (half_days * 0.5)
+    paid_sundays = _count_paid_sundays(employee["employee_id"], month, year)
+
+    attendance_ratio   = (full_days + half_days * 0.5 + paid_sundays) / working_days
+    attendance_salary  = round(base_salary * attendance_ratio, 2)
+
+    # OT (flat day units)
+    ot_full  = sum(1.0 for s in month_sessions if s.get("ot_status") == "full")
+    ot_half  = sum(1.0 for s in month_sessions if s.get("ot_status") == "half")
+    ot_units = ot_full + ot_half * 0.5
+    daily_rate = base_salary / working_days
+    ot_pay     = round(ot_units * daily_rate * OT_MULTIPLIER, 2)
+
+    # Annual bonus — March only
+    annual_bonus = 0.0
+    bonus_eligible = False
+    if month == 3:   # March
+        bonus_eligible = is_bonus_eligible(employee["employee_id"], year)
+        if bonus_eligible:
+            annual_bonus = calculate_bonus(base_salary, absent_days, working_days)
+
+    final_salary = round(
+        attendance_salary + ot_pay + annual_bonus - advance, 2
+    )
 
     return {
-        "base_salary":        base,
-        "attendance_salary":  attendance_salary,
-        "ot_pay":             ot_pay,
-        "ot_full_days":       ot_full_days,
-        "ot_half_days":       ot_half_days,
-        "ot_day_units":       ot_day_units,
-        "bonus":              bonus,
-        "advance":            advance,
-        "final_salary":       final_salary,
-        "payment_mode":       payment_mode,
-        "total_working_days": total_working,
-        "total_present":      present,
-        "half_days":          half_days,
-        "absent_days":        summary.get("absent_days", 0),
-        "paid_holidays":      paid_holidays,
-        "annual_days_used":   0,  # filled during bonus month
+        "employee_id":       employee["employee_id"],
+        "name":              employee["name"],
+        "base_salary":       base_salary,
+        "full_days":         full_days,
+        "half_days":         half_days,
+        "absent_days":       round(absent_days, 2),
+        "paid_holidays":     paid_sundays,
+        "ot_full_days":      ot_full,
+        "ot_half_days":      ot_half,
+        "ot_day_units":      ot_units,
+        "ot_pay":            ot_pay,
+        "attendance_salary": attendance_salary,
+        "annual_bonus":      annual_bonus,
+        "bonus_eligible":    bonus_eligible,
+        "advance":           advance,
+        "final_salary":      final_salary,
+        "payment_mode":      employee.get("payment_mode", "CASH"),
+        "month":             month,
+        "year":              year,
     }
 
 
-class SalaryModule:
-    def __init__(self, parent_frame, current_user):
-        self.parent = parent_frame
-        self.current_user = current_user
-        self.role = current_user.get("role", "ca")
-        self.db = get_db()
+def _count_paid_sundays(employee_id, month, year):
+    """Count Sundays with pay based on Sat+Mon presence rule."""
+    sessions_map = {}
+    sessions = read_all("sessions", filters={"employee_id": employee_id})
+    for s in sessions:
+        try:
+            d = datetime.strptime(s["date"], "%Y-%m-%d").date()
+            if d.month == month and d.year == year:
+                sessions_map[d] = s
+        except Exception:
+            pass
+
+    paid = 0.0
+    cal  = calendar.monthcalendar(year, month)
+    for week in cal:
+        sat_d = date(year, month, week[5]) if week[5] != 0 else None
+        sun_d = date(year, month, week[6]) if week[6] != 0 else None
+        mon_d = None
+        # Monday of next week
+        next_week_idx = cal.index(week) + 1
+        if next_week_idx < len(cal) and cal[next_week_idx][0] != 0:
+            mon_d = date(year, month, cal[next_week_idx][0])
+
+        if sun_d is None:
+            continue
+
+        sat_present = sat_d and sessions_map.get(sat_d, {}).get("duty_status") in ("full", "half")
+        mon_present = mon_d and sessions_map.get(mon_d, {}).get("duty_status") in ("full", "half")
+
+        if sat_present and mon_present:
+            paid += 1.0
+        elif sat_present and not mon_present:   # Saturday only → half pay
+            paid += 0.5
+        # else: no Sunday pay
+
+    return paid
+
+
+# ─── Advance Payment Panel ────────────────────────────────────────────────────
+class AdvancePanel(tk.Toplevel):
+    """
+    Dialog to record an advance payment given to an employee.
+    Advance is stored in the employee record and deducted from next salary.
+    """
+
+    def __init__(self, parent, employee):
+        super().__init__(parent)
+        self.employee = employee
+        self.title(f"Advance Payment — {employee['name']} ({employee['employee_id']})")        
+        self.geometry("420x320")
+        self.resizable(False, False)
+        self.grab_set()
         self._build_ui()
-        self._load_salary_records()
 
-    # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        top = tk.Frame(self.parent, bg="#1a2740")
-        top.pack(fill="x", pady=(0, 10))
-        tk.Label(top, text="💰 Salary Management",
-                 font=("Arial", 14, "bold"), bg="#1a2740", fg="white").pack(side="left", padx=10)
+        emp = self.employee
+        current_advance = float(emp.get("advance", 0))
 
-        if has_permission(self.role, "salary"):
-            tk.Button(top, text="⚙ Generate This Month", bg="#f77f00", fg="white",
-                      font=("Arial", 10, "bold"), relief="flat", padx=12, pady=5,
-                      cursor="hand2", command=self._generate_all).pack(side="right", padx=5)
+        frm = tk.Frame(self, padx=20, pady=20)
+        frm.pack(fill="both", expand=True)
 
-        # CA and HR and Admin can pay / mark bonus
-        if self.role in ("admin", "super_admin", "hr", "ca"):
-            tk.Button(top, text="🎁 Pay Bonus", bg="#27ae60", fg="white",
-                      font=("Arial", 10, "bold"), relief="flat", padx=12, pady=5,
-                      cursor="hand2", command=self._open_bonus_panel).pack(side="right", padx=5)
+        tk.Label(frm, text="💵 Advance Payment",
+                 font=("Helvetica", 14, "bold")).pack(anchor="w", pady=(0, 10))
 
-        # CA (and admin) can increase salary
-        if self.role in ("admin", "super_admin", "ca"):
-            tk.Button(top, text="📈 Salary Raise", bg="#8e44ad", fg="white",
-                      font=("Arial", 10, "bold"), relief="flat", padx=12, pady=5,
-                      cursor="hand2", command=self._open_raise_panel).pack(side="right", padx=5)
+        # Info row
+        info = tk.Frame(frm)
+        info.pack(fill="x", pady=4)
+        tk.Label(info, text="Employee:", width=18, anchor="w").pack(side="left")
+        tk.Label(info, text=f"{emp['name']}  ({emp['employee_id']})",
+                 font=("Helvetica", 10, "bold")).pack(side="left")
 
-        sel = tk.Frame(self.parent, bg="#0d1b2a")
-        sel.pack(fill="x", padx=10, pady=5)
-        now = datetime.now()
-        tk.Label(sel, text="Month:", bg="#0d1b2a", fg="#ccc").pack(side="left")
-        self.month_var = tk.IntVar(value=now.month)
-        ttk.Spinbox(sel, from_=1, to=12, textvariable=self.month_var, width=4).pack(side="left", padx=5)
-        tk.Label(sel, text="Year:", bg="#0d1b2a", fg="#ccc").pack(side="left")
-        self.year_var = tk.IntVar(value=now.year)
-        ttk.Spinbox(sel, from_=2024, to=2030, textvariable=self.year_var, width=6).pack(side="left", padx=5)
-        tk.Button(sel, text="Load", bg="#1e6f9f", fg="white", relief="flat",
-                  command=self._load_salary_records).pack(side="left", padx=5)
+        tk.Frame(frm, height=1, bg="#cccccc").pack(fill="x", pady=8)
 
-        cols = ("Employee ID", "Name", "Month", "Base", "Final Salary",
-                "OT Days", "Bonus", "Status")
-        self.tree = ttk.Treeview(self.parent, columns=cols, show="headings", height=16)
-        for col in cols:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=105, anchor="center")
-        self.tree.pack(fill="both", expand=True, padx=10)
-        self.tree.bind("<Double-1>", self._download_slip)
-        tk.Label(self.parent, text="Double-click row to download salary slip",
-                 bg="#0d1b2a", fg="#666", font=("Arial", 8)).pack(anchor="w", padx=10)
+        # Current outstanding advance
+        cur = tk.Frame(frm)
+        cur.pack(fill="x", pady=2)
+        tk.Label(cur, text="Outstanding Advance:", width=22, anchor="w").pack(side="left")
+        tk.Label(cur, text=f"Rs. {current_advance:,.2f}",
+                 fg="#c0392b", font=("Helvetica", 10, "bold")).pack(side="left")
 
-    # ── Load Records ─────────────────────────────────────────────────────────
-    def _load_salary_records(self):
-        m = self.month_var.get(); y = self.year_var.get()
+        tk.Frame(frm, height=1, bg="#cccccc").pack(fill="x", pady=8)
+
+        # New advance amount
+        amt_row = tk.Frame(frm)
+        amt_row.pack(fill="x", pady=4)
+        tk.Label(amt_row, text="New Advance Amount (Rs.):",
+                 width=24, anchor="w").pack(side="left")
+        self.advance_var = tk.StringVar()
+        tk.Entry(amt_row, textvariable=self.advance_var, width=12).pack(side="left")
+
+        # Note
+        note_row = tk.Frame(frm)
+        note_row.pack(fill="x", pady=4)
+        tk.Label(note_row, text="Note (optional):",
+                 width=24, anchor="w").pack(side="left")
+        self.note_var = tk.StringVar()
+        tk.Entry(note_row, textvariable=self.note_var, width=24).pack(side="left")
+
+        tk.Label(frm,
+                 text="⚠️ New advance is ADDED to existing outstanding advance.\n"
+                      "Full outstanding amount is deducted from next salary.",
+                 fg="#e67e22", font=("Helvetica", 8), justify="left"
+                 ).pack(anchor="w", pady=(8, 0))
+
+        # Buttons
+        btn_row = tk.Frame(frm)
+        btn_row.pack(fill="x", pady=(12, 0))
+        tk.Button(btn_row, text="✔ Save Advance",
+                  command=self._save, bg="#27ae60", fg="white",
+                  padx=12, pady=4).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Clear Outstanding",
+                  command=self._clear_advance, bg="#e74c3c", fg="white",
+                  padx=12, pady=4).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Cancel",
+                  command=self.destroy, padx=12, pady=4).pack(side="left")
+
+    def _save(self):
         try:
-            docs = self.db.collection("salary") \
-                .where("month_num", "==", m).where("year", "==", y).stream()
-            for row in self.tree.get_children(): self.tree.delete(row)
-            for doc in docs:
-                s = doc.to_dict()
-                ot_full = s.get("ot_full_days", 0)
-                ot_half = s.get("ot_half_days", 0)
-                ot_disp = f"{ot_full}F+{ot_half}H" if (ot_full or ot_half) else "0"
-                bonus_disp = f"Rs.{s.get('bonus',0):,}" if s.get('bonus', 0) > 0 else "—"
-                self.tree.insert("", "end", values=(
-                    s.get("employee_id"), s.get("employee_name", ""),
-                    f"{MONTH_NAMES[m-1]} {y}",
-                    f"Rs.{s.get('base_salary', 0):,}",
-                    f"Rs.{s.get('final_salary', 0):,}",
-                    ot_disp, bonus_disp,
-                    "Ready" if s.get("slip_url") else "Pending"
-                ))
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load salary: {e}")
-
-    # ── Generate All ─────────────────────────────────────────────────────────
-    def _generate_all(self):
-        if not messagebox.askyesno("Confirm", "Generate salary slips for all active employees?"):
+            new_amt = float(self.advance_var.get().strip())
+            if new_amt < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Enter a valid positive advance amount.", parent=self)
             return
-        m = self.month_var.get(); y = self.year_var.get()
-        db = get_db()
-        settings     = db.collection("settings").document("company").get()
-        company_info = settings.to_dict() if settings.exists else {}
-        ot_rate      = float(company_info.get("ot_rate_multiplier", 1.5))
-        payment_mode = company_info.get("default_payment_mode", "CASH")
-        employees    = db.collection("employees").where("status", "==", "active").stream()
-        count = 0
-        for emp_doc in employees:
-            emp = emp_doc.to_dict()
-            try:
-                summary     = calculate_monthly_summary(emp["employee_id"], y, m)
-                salary_data = calculate_salary(emp, summary, ot_rate,
-                                               advance=float(emp.get("advance", 0)),
-                                               payment_mode=payment_mode,
-                                               month=m, year=y)
-                salary_data.update({
-                    "month":         MONTH_NAMES[m - 1],
-                    "month_num":     m,
-                    "year":          y,
-                    "employee_id":   emp["employee_id"],
-                    "employee_name": emp["name"],
-                })
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                    tmp_path = tmp.name
-                generate_salary_slip(emp, salary_data, company_info, tmp_path)
-                bucket    = get_bucket()
-                blob_path = f"salary_slips/{emp['employee_id']}/{y}_{m:02d}_slip.pdf"
-                blob      = bucket.blob(blob_path)
-                blob.upload_from_filename(tmp_path, content_type="application/pdf")
-                blob.make_public()
-                slip_url = blob.public_url
-                os.unlink(tmp_path)
-                from datetime import timedelta
-                expires = date(y + 1 if m == 12 else y, 1 if m == 12 else m + 1, 1)
-                salary_data["slip_url"]        = slip_url
-                salary_data["generated_at"]    = str(date.today())
-                salary_data["slip_expires_at"] = str(expires)
-                db.collection("salary").document(f"{emp['employee_id']}_{y}_{m:02d}").set(salary_data)
-                if emp.get("email"):
-                    self._send_email(emp, salary_data, slip_url, company_info)
-                count += 1
-            except Exception as e:
-                print(f"Error for {emp.get('employee_id')}: {e}")
-        messagebox.showinfo("Done", f"Generated {count} salary slips!")
-        self._load_salary_records()
 
-    # ── Bonus Panel (HR / CA / Admin) ─────────────────────────────────────────
-    def _open_bonus_panel(self):
-        win = tk.Toplevel(self.parent)
-        win.title("🎁 Annual Bonus Management")
-        win.geometry("700x500")
-        win.configure(bg="#0d1b2a")
+        emp_id = self.employee["employee_id"]
+        current = float(self.employee.get("advance", 0))
+        total   = round(current + new_amt, 2)
+        note    = self.note_var.get().strip() or "-"
 
-        tk.Label(win, text="Annual Bonus — Eligibility & Payment",
-                 font=("Arial", 13, "bold"), bg="#0d1b2a", fg="#f0c040").pack(pady=10)
+        # Update employee record
+        update("employees", emp_id, {"advance": total})
 
-        info_text = (
-            f"Bonus eligibility: >= {MIN_DAYS_FOR_BONUS} working days in previous year (incl. paid holidays).\n"
-            f"Bonus is paid in {MONTH_NAMES[BONUS_MONTH-1]} salary only.\n"
-            "You can set each employee's annual bonus amount below."
+        # Log the advance transaction
+        write("advance_logs", None, {
+            "employee_id":   emp_id,
+            "amount":        new_amt,
+            "total_outstanding": total,
+            "note":          note,
+            "date":          date.today().isoformat(),
+            "recorded_by":   "admin",   # replace with logged-in user
+        })
+
+        messagebox.showinfo(
+            "Saved",
+            f"Advance of Rs. {new_amt:,.2f} recorded.\n"
+            f"Total outstanding: Rs. {total:,.2f}\n"
+            f"Will be deducted from {self.employee['name']}'s next salary.",
+            parent=self
         )
-        tk.Label(win, text=info_text, bg="#0d1b2a", fg="#aaa",
-                 font=("Arial", 9), justify="left").pack(padx=20, anchor="w")
+        self.destroy()
 
-        cols = ("Employee ID", "Name", "Annual Days (prev yr)",
-                "Eligible", "Bonus Amount (Rs)", "Action")
-        tree = ttk.Treeview(win, columns=cols, show="headings", height=14)
-        for c in cols:
-            tree.heading(c, text=c)
-            tree.column(c, width=110, anchor="center")
-        tree.pack(fill="both", expand=True, padx=10, pady=5)
+    def _clear_advance(self):
+        """Mark advance as fully repaid (set to 0)."""
+        if not messagebox.askyesno(
+            "Clear Advance",
+            f"Mark all outstanding advance for {self.employee['name']} as repaid?\n"
+            "This will set the outstanding balance to Rs. 0.",
+            parent=self
+        ):
+            return
+        emp_id = self.employee["employee_id"]
+        update("employees", emp_id, {"advance": 0})
+        write("advance_logs", None, {
+            "employee_id": emp_id,
+            "amount":      0,
+            "total_outstanding": 0,
+            "note":        "Advance cleared / fully repaid",
+            "date":        date.today().isoformat(),
+            "recorded_by": "admin",
+        })
+        messagebox.showinfo("Cleared", "Outstanding advance set to Rs. 0.", parent=self)
+        self.destroy()
 
-        prev_year = datetime.now().year - 1
-        try:
-            docs = self.db.collection("employees").where("status", "==", "active").stream()
-            for doc in docs:
-                emp = doc.to_dict()
-                ann = calculate_annual_present(emp["employee_id"], prev_year)
-                eligible = "✅ Yes" if ann >= MIN_DAYS_FOR_BONUS else "❌ No"
-                amt = emp.get("annual_bonus_amount", 0)
-                tree.insert("", "end", iid=emp["employee_id"], values=(
-                    emp["employee_id"], emp["name"],
-                    f"{ann:.1f}", eligible, f"Rs.{amt:,}", "Edit"
-                ))
-        except Exception as e:
-            messagebox.showerror("Error", str(e), parent=win)
 
-        def on_edit(event):
-            sel = tree.selection()
-            if not sel: return
-            emp_id = sel[0]
-            row    = tree.item(emp_id)["values"]
-            new_amt = simpledialog.askfloat(
-                "Set Bonus Amount",
-                f"Enter annual bonus for {row[1]} (Rs):\n"
-                f"Annual days last year: {row[2]}  |  Eligible: {row[3]}",
-                parent=win, minvalue=0)
-            if new_amt is None: return
-            try:
-                self.db.collection("employees").document(emp_id).update(
-                    {"annual_bonus_amount": new_amt})
-                messagebox.showinfo("Saved",
-                    f"Bonus for {row[1]} set to Rs.{new_amt:,}", parent=win)
-                tree.set(emp_id, "Bonus Amount (Rs)", f"Rs.{new_amt:,}")
-            except Exception as e:
-                messagebox.showerror("Error", str(e), parent=win)
+# ─── Salary Panel (main tab) ──────────────────────────────────────────────────
+class SalaryPanel(tk.Frame):
+    """
+    Main Salary tab in the Admin App.
+    Buttons: Generate All | Generate Single | Advance Payment | Salary Raise
+    """
 
-        tree.bind("<Double-1>", on_edit)
-        tk.Label(win, text="Double-click a row to set/edit bonus amount",
-                 bg="#0d1b2a", fg="#666", font=("Arial", 8)).pack()
+    def __init__(self, parent, role="admin"):
+        super().__init__(parent)
+        self.role = role
+        self._build_ui()
 
-    # ── Salary Raise Panel (CA / Admin) ───────────────────────────────────────
-    def _open_raise_panel(self):
-        win = tk.Toplevel(self.parent)
-        win.title("📈 Salary Raise")
-        win.geometry("620x450")
-        win.configure(bg="#0d1b2a")
+    def _build_ui(self):
+        # Header
+        hdr = tk.Frame(self, pady=10)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="💰 Salary Management",
+                 font=("Helvetica", 15, "bold")).pack(side="left", padx=12)
 
-        tk.Label(win, text="Salary Raise — Per Employee",
-                 font=("Arial", 13, "bold"), bg="#0d1b2a", fg="#a29bfe").pack(pady=10)
+        # Action buttons
+        btn_bar = tk.Frame(self)
+        btn_bar.pack(fill="x", padx=12, pady=4)
 
-        cols = ("Employee ID", "Name", "Current Salary (Rs)", "New Salary")
-        tree = ttk.Treeview(win, columns=cols, show="headings", height=14)
-        for c in cols:
-            tree.heading(c, text=c)
-            tree.column(c, width=145, anchor="center")
-        tree.pack(fill="both", expand=True, padx=10, pady=5)
+        tk.Button(btn_bar, text="⚡ Generate All Salaries",
+                  command=self._generate_all,
+                  bg="#2980b9", fg="white", padx=10, pady=5).pack(side="left", padx=4)
 
-        try:
-            docs = self.db.collection("employees").where("status", "==", "active").stream()
-            for doc in docs:
-                emp = doc.to_dict()
-                tree.insert("", "end", iid=emp["employee_id"], values=(
-                    emp["employee_id"], emp["name"],
-                    f"Rs.{emp.get('salary', 0):,}", "—"
-                ))
-        except Exception as e:
-            messagebox.showerror("Error", str(e), parent=win)
+        tk.Button(btn_bar, text="💵 Advance Payment",
+                  command=self._open_advance,
+                  bg="#e67e22", fg="white", padx=10, pady=5).pack(side="left", padx=4)
 
-        def on_raise(event):
-            sel = tree.selection()
-            if not sel: return
-            emp_id = sel[0]
-            row    = tree.item(emp_id)["values"]
-            new_sal = simpledialog.askfloat(
-                "New Salary",
-                f"Enter NEW base salary for {row[1]}:\n(Current: {row[2]})",
-                parent=win, minvalue=1)
-            if new_sal is None: return
-            if not messagebox.askyesno("Confirm Raise",
-                f"Set salary for {row[1]} to Rs.{new_sal:,}?\n"
-                "This change takes effect from next month's payroll.",
-                parent=win): return
-            try:
-                self.db.collection("employees").document(emp_id).update(
-                    {"salary": new_sal,
-                     "last_raise_by": self.current_user.get("username", ""),
-                     "last_raise_date": str(date.today())})
-                messagebox.showinfo("Updated",
-                    f"{row[1]}'s salary updated to Rs.{new_sal:,}", parent=win)
-                tree.set(emp_id, "Current Salary (Rs)", f"Rs.{new_sal:,}")
-                tree.set(emp_id, "New Salary", f"✅ Rs.{new_sal:,}")
-            except Exception as e:
-                messagebox.showerror("Error", str(e), parent=win)
+        if self.role in ("super_admin", "admin", "ca"):
+            tk.Button(btn_bar, text="📈 Salary Raise",
+                      command=self._salary_raise,
+                      bg="#27ae60", fg="white", padx=10, pady=5).pack(side="left", padx=4)
 
-        tree.bind("<Double-1>", on_raise)
-        tk.Label(win, text="Double-click a row to set new salary",
-                 bg="#0d1b2a", fg="#666", font=("Arial", 8)).pack()
+        # Month/Year selector
+        sel = tk.Frame(self)
+        sel.pack(fill="x", padx=12, pady=4)
+        tk.Label(sel, text="Month:").pack(side="left")
+        self.month_var = tk.StringVar(value=str(datetime.now().month))
+        ttk.Combobox(sel, textvariable=self.month_var, width=4,
+                     values=[str(i) for i in range(1, 13)]).pack(side="left", padx=4)
+        tk.Label(sel, text="Year:").pack(side="left")
+        self.year_var = tk.StringVar(value=str(datetime.now().year))
+        ttk.Entry(sel, textvariable=self.year_var, width=6).pack(side="left", padx=4)
 
-    # ── Email ─────────────────────────────────────────────────────────────────
-    def _send_email(self, emp, salary_data, slip_url, company_info):
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        host = company_info.get("smtp_host", "")
-        port = int(company_info.get("smtp_port", 587))
-        user = company_info.get("smtp_user", "")
-        pwd  = company_info.get("smtp_pass", "")
-        if not all([host, user, pwd]): return
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"Salary Slip - {salary_data['month']} {salary_data['year']}"
-            msg["From"]    = user
-            msg["To"]      = emp["email"]
-            html = f"""<h2>Salary Slip — {salary_data['month']} {salary_data['year']}</h2>
-            <p>Dear {emp['name']},</p>
-            <p>Your salary slip has been generated.</p>
-            <p><b>Final Salary: Rs.{salary_data['final_salary']:,}</b></p>
-            <p><a href="{slip_url}">Download Salary Slip PDF</a></p>
-            <hr/><small>{company_info.get('name','Hype Pvt Ltd')}</small>"""
-            msg.attach(MIMEText(html, "html"))
-            with smtplib.SMTP(host, port) as s:
-                s.starttls(); s.login(user, pwd)
-                s.sendmail(user, emp["email"], msg.as_string())
-        except Exception as e:
-            print(f"Email failed: {e}")
+        # Employee list
+        self.tree = ttk.Treeview(self,
+            columns=("id", "name", "base", "advance", "final", "status"),
+            show="headings", height=18)
+        for col, w, label in [
+            ("id", 90, "Emp ID"),
+            ("name", 180, "Name"),
+            ("base", 100, "Base Salary"),
+            ("advance", 100, "Advance"),
+            ("final", 120, "Final Salary"),
+            ("status", 100, "Status"),
+        ]:
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=w)
+        self.tree.pack(fill="both", expand=True, padx=12, pady=8)
+        self.tree.bind("<Double-1>", self._on_row_double_click)
+        self._load_employees()
 
-    # ── Download Slip ─────────────────────────────────────────────────────────
-    def _download_slip(self, event):
+    def _load_employees(self):
+        self.tree.delete(*self.tree.get_children())
+        employees = read_all("employees", filters={"status": "active"})
+        self.employees = {e["employee_id"]: e for e in employees}
+        for e in employees:
+            self.tree.insert("", "end", values=(
+                e["employee_id"],
+                e["name"],
+                f"Rs. {float(e.get('salary', 0)):,.0f}",
+                f"Rs. {float(e.get('advance', 0)):,.0f}",
+                "—",
+                "Pending"
+            ))
+
+    def _selected_employee(self):
         sel = self.tree.selection()
-        if not sel: return
+        if not sel:
+            messagebox.showwarning("Select", "Please select an employee first.")
+            return None
         emp_id = self.tree.item(sel[0])["values"][0]
-        m = self.month_var.get(); y = self.year_var.get()
-        doc = self.db.collection("salary").document(f"{emp_id}_{y}_{m:02d}").get()
-        if doc.exists:
-            slip_url = doc.to_dict().get("slip_url", "")
-            if slip_url:
-                import webbrowser; webbrowser.open(slip_url)
-            else:
-                messagebox.showinfo("Info", "Slip not generated yet.")
-        else:
-            messagebox.showinfo("Info", "No salary record found.")
+        return self.employees.get(emp_id)
+
+    def _open_advance(self):
+        emp = self._selected_employee()
+        if emp:
+            AdvancePanel(self, emp)
+
+    def _on_row_double_click(self, event):
+        emp = self._selected_employee()
+        if emp:
+            AdvancePanel(self, emp)
+
+    def _generate_all(self):
+        try:
+            month = int(self.month_var.get())
+            year  = int(self.year_var.get())
+        except ValueError:
+            messagebox.showerror("Error", "Invalid month or year.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Generate Salaries",
+            f"Generate salary slips for ALL employees for {calendar.month_name[month]} {year}?\n\n"
+            f"{'(March — Annual bonus will be applied for eligible employees)' if month == 3 else ''}"
+        )
+        if not confirm:
+            return
+
+        employees = read_all("employees", filters={"status": "active"})
+        success, failed = 0, 0
+        for emp in employees:
+            try:
+                sessions = read_all("sessions", filters={
+                    "employee_id": emp["employee_id"],
+                    "month": month, "year": year
+                })
+                result = calculate_salary(emp, sessions, month, year)
+                slip_key = f"{emp['employee_id']}_{year}_{month:02d}"
+
+                from datetime import timedelta
+                from dateutil.relativedelta import relativedelta
+                expires = datetime.now() + relativedelta(months=12)
+
+                write("salary", slip_key, {
+                    **result,
+                    "generated_at":   datetime.now().isoformat(),
+                    "slip_expires_at": expires.isoformat(),
+                })
+
+                # After saving, clear advance from employee record
+                if result["advance"] > 0:
+                    update("employees", emp["employee_id"], {"advance": 0})
+
+                success += 1
+            except Exception as ex:
+                print(f"[SalaryPanel] Error for {emp.get('employee_id')}: {ex}")
+                failed += 1
+
+        messagebox.showinfo(
+            "Done",
+            f"Salary generation complete.\n✅ Success: {success}\n❌ Failed: {failed}"
+        )
+        self._load_employees()
+
+    def _salary_raise(self):
+        emp = self._selected_employee()
+        if not emp:
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Salary Raise — {emp['name']}")
+        dlg.geometry("340x180")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        frm = tk.Frame(dlg, padx=20, pady=20)
+        frm.pack(fill="both", expand=True)
+        tk.Label(frm, text=f"Current Salary: Rs. {float(emp.get('salary', 0)):,.0f}",
+                 font=("Helvetica", 11, "bold")).pack(anchor="w", pady=4)
+        tk.Label(frm, text="New Salary (Rs.):").pack(anchor="w")
+        new_sal_var = tk.StringVar()
+        tk.Entry(frm, textvariable=new_sal_var, width=16).pack(anchor="w", pady=4)
+
+        def save_raise():
+            try:
+                new_sal = float(new_sal_var.get().strip())
+                if new_sal <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Error", "Enter a valid salary.", parent=dlg)
+                return
+            update("employees", emp["employee_id"], {"salary": new_sal})
+            messagebox.showinfo("Saved", f"Salary updated to Rs. {new_sal:,.0f}.", parent=dlg)
+            dlg.destroy()
+            self._load_employees()
+
+        btn_row = tk.Frame(frm)
+        btn_row.pack(fill="x", pady=8)
+        tk.Button(btn_row, text="✔ Save", command=save_raise,
+                  bg="#27ae60", fg="white", padx=12).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy, padx=12).pack(side="left")
