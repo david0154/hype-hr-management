@@ -2,21 +2,20 @@
 /**
  * Hype HR Management — Monthly Salary Cron Job
  *
- * Crontab (runs 1st of each month at 00:05 IST / UTC+5:30 = 18:35 UTC prev day):
- *   35 18 28-31 * * [ "$(date +\%d -d tomorrow)" = "01" ] && php /path/to/cron_job.php
- * OR simpler:
+ * Crontab (runs 1st of each month at 00:05 IST):
  *   5 0 1 * * TZ=Asia/Kolkata php /var/www/html/php_backend/cron_job.php >> /var/log/hype_hr_cron.log 2>&1
  *
  * Process:
  *  1. Fetch active employees from Firestore
  *  2. Calculate previous-month attendance (sessions collection)
- *  3. Apply exact Duty/OT/Sunday rules (12-hour workday)
- *  4. Calculate salary: (Base × AttRatio) + OT + Bonus − Deduction − Advance
+ *  3. Apply exact Duty/OT/Sunday rules (12-hour workday, OT = flat day-rate)
+ *  4. Calculate salary: (Base × AttRatio) + OT + YearlyBonus − Advance
+ *     NOTE: Deduction is excluded from salary slip per HR policy.
  *  5. Generate branded PDF (company name + address + logo)
  *  6. Upload PDF to Firebase Storage (1-year signed URL)
  *  7. Save salary record to Firestore
  *  8. Email PDF to employee (if SMTP configured + employee has email)
- *  9. SMS alert (optional Twilio)
+ *  9. SMS alert (optional)
  * 10. Cleanup slips older than 12 months
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
@@ -51,7 +50,7 @@ log_cron('=== Hype HR Salary Cron Started: ' . $now->format('Y-m-d H:i:s') . ' I
 log_cron("Target month: {$targetMonthStr} {$targetYear} ({$targetKey})");
 
 // ── Load Firestore config ─────────────────────────────────────────────────────
-$fb      = new HypeFirebaseAPI();
+$fb       = new HypeFirebaseAPI();
 $settings = $fb->getSettings();
 $company  = $fb->getCompanyDetails();
 $smtpCfg  = $fb->getSmtpConfig();
@@ -79,26 +78,30 @@ foreach ($employees as $employee) {
             continue;
         }
 
-        // 2. Attendance summary (exact rules)
+        // 2. Attendance summary — returns ot_days (flat units), NOT ot_hours
         $summary = $fb->getAttendanceSummary($empId, $targetYear, $targetMonth);
         log_cron(sprintf(
-            '  Att → Present:%.1f  Half:%.1f  Absent:%.1f  PaidHol:%.1f  OT:%.1fh',
+            '  Att → Present:%.1f  Half:%.1f  Absent:%.1f  PaidHol:%.1f  OT days:%.1f',
             $summary['total_present'], $summary['half_days'],
             $summary['absent_days'],   $summary['paid_holidays'],
-            $summary['ot_hours']
+            $summary['ot_days']        // flat OT day units
         ));
 
-        // 3. Adjustments
+        // 3. Advance only (bonus=yearly from employee record, deduction=excluded)
         $adj     = $fb->getSalaryAdjustments($empId, $targetKey);
-        $summary = array_merge($summary, $adj);
+        // Only carry advance from monthly adjustments; bonus comes from employee record
+        $summary['advance'] = $adj['advance'] ?? 0.0;
+        // Do NOT carry adj['bonus'] or adj['deduction'] — bonus is yearly, deduction excluded
 
-        // 4. Calculate salary
-        $salaryData = calculateSalary($employee, $summary, $settings);
+        // 4. Calculate salary (pass currentMonth for yearly bonus check)
+        $salaryData = calculateSalary($employee, $summary, $settings, $targetMonth);
         $salaryData['month']        = $targetMonthStr;
         $salaryData['month_num']    = $targetMonth;
         $salaryData['year']         = $targetYear;
         $salaryData['payment_mode'] = $employee['payment_mode'] ?? 'CASH';
-        log_cron('  Salary → Rs. ' . number_format($salaryData['final_salary'], 2));
+        log_cron('  Salary → Rs. ' . number_format($salaryData['final_salary'], 2)
+            . ' | OT days: ' . $salaryData['ot_days']
+            . ' | Bonus: Rs. ' . $salaryData['bonus']);
 
         // 5. Generate PDF
         $pdfFile = "salary_{$empId}_{$targetKey}.pdf";

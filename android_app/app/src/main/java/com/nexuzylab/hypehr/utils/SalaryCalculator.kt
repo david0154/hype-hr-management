@@ -10,14 +10,23 @@ import java.util.*
  *   4–7 hrs  → Half Day  (0.5 days)
  *   ≥ 7 hrs  → Full Day  (1.0 days)
  *
- * OT SESSION (second IN→OUT same day):
- *   < 4 hrs  → No OT        (0 OT days)
- *   4–7 hrs  → Half OT day  (0.5 OT days)
- *   ≥ 7 hrs  → Full OT day  (1.0 OT days)
+ * OT SESSION (second IN→OUT same day) — FLAT DAY-RATE, NOT hourly:
+ *   < 4 hrs  → No OT        (0 OT day units)
+ *   4–7 hrs  → Half OT day  (0.5 OT day units)
+ *   ≥ 7 hrs  → Full OT day  (1.0 OT day units)
  *   Max = 1.0 OT day per session regardless of actual hours worked.
+ *   Even 12 hrs OT = 1.0 OT day (same as 7 hrs OT).
  *
  * OT Pay = otDays × (baseSalary / workingDays) × otMultiplier
- *   — Flat day-rate. NOT hourly.
+ *   — Flat day-rate. NEVER hourly.
+ *
+ * BONUS POLICY:
+ *   Bonus is YEARLY only — paid in the employee's designated bonus_month.
+ *   Monthly salary slips do NOT include bonus unless it is the bonus month.
+ *
+ * DEDUCTION POLICY:
+ *   Deduction is NOT applied in salary calculation or shown on slip.
+ *   Only advance is deducted from the final salary.
  *
  * SUNDAY RULE:
  *   Sat present + Mon present → Full Pay  (1.0 paid holiday)
@@ -33,17 +42,23 @@ object SalaryCalculator {
         val attendanceSalary: Float,
         val otPay:            Float,
         val bonus:            Float,
-        val deduction:        Float,
         val advance:          Float,
         val finalSalary:      Float,
         val totalPresent:     Int,
         val halfDays:         Int,
         val absentDays:       Int,
         val paidHolidays:     Float,
-        val otDays:           Float,   // flat OT day units (0 / 0.5 / 1.0 per session)
+        val otDays:           Float,     // flat OT day units (0 / 0.5 / 1.0 per session)
+        val otFullDays:       Int,       // for display: number of full OT sessions
+        val otHalfDays:       Int,       // for display: number of half OT sessions
         val attendanceRatio:  Float
     )
 
+    /**
+     * @param bonusMonth  1–12: the month in which yearly bonus is paid (0 = no bonus)
+     * @param bonusAmount The yearly bonus amount (from employee record)
+     * @param currentMonth The month being calculated (1–12), used for bonus check
+     */
     fun calculate(
         baseSalary:   Float,
         sessions:     List<Map<String, Any>>,
@@ -51,9 +66,11 @@ object SalaryCalculator {
         month:        Int,
         workingDays:  Int   = 26,
         otMultiplier: Float = 1.5f,
-        bonus:        Float = 0f,
-        deduction:    Float = 0f,
-        advance:      Float = 0f
+        bonus:        Float = 0f,   // ignored — bonus comes from bonusAmount/bonusMonth
+        advance:      Float = 0f,
+        bonusMonth:   Int   = 0,
+        bonusAmount:  Float = 0f,
+        currentMonth: Int   = month
     ): Result {
 
         // ── Group sessions by date ─────────────────────────────────────────────
@@ -76,11 +93,15 @@ object SalaryCalculator {
                 dutyHrs >= 4f -> 0.5f
                 else          -> 0.0f
             }
+
             // OT: flat day units — NOT actual hours
+            // ≥ 7 hrs = 1.0 OT day  (even 12 hrs = 1.0 OT day)
+            // 4–7 hrs = 0.5 OT day
+            // < 4 hrs = 0.0 (no OT)
             val otDay = when {
-                otHrs >= 7f -> 1.0f   // Full OT day
-                otHrs >= 4f -> 0.5f   // Half OT day
-                else        -> 0.0f   // No OT
+                otHrs >= 7f -> 1.0f
+                otHrs >= 4f -> 0.5f
+                else        -> 0.0f
             }
 
             // Skip Sundays — handled by Sunday rule
@@ -111,38 +132,47 @@ object SalaryCalculator {
                 val monPresent = (dayResults[monDate]?.duty ?: 0f) > 0f
 
                 sundayPaid += when {
-                    satPresent && monPresent  -> 1.0f
-                    satPresent && !monPresent -> 0.5f
-                    else                     -> 0.0f
+                    satPresent && monPresent  -> 1.0f   // Full pay
+                    satPresent && !monPresent -> 0.5f   // Half pay
+                    else                     -> 0.0f   // No pay
                 }
             }
             cal.add(Calendar.DAY_OF_MONTH, 1)
         }
 
         // ── Salary calculation ─────────────────────────────────────────────────
-        val fullDays = dayResults.values.count { it.duty == 1.0f }
-        val halfDays = dayResults.values.count { it.duty == 0.5f }
+        val fullDays    = dayResults.values.count { it.duty == 1.0f }
+        val halfDays    = dayResults.values.count { it.duty == 0.5f }
         val totalOtDays = dayResults.values.sumOf { it.otDay.toDouble() }.toFloat()
+
+        // OT display breakdown
+        val otFullDaysCount = totalOtDays.toInt()                          // full OT sessions
+        val otHalfDaysCount = if (totalOtDays - otFullDaysCount >= 0.5f) 1 else 0  // half OT sessions
 
         val effectiveDays    = fullDays + halfDays * 0.5f + sundayPaid
         val attendanceRatio  = if (workingDays > 0) minOf(effectiveDays / workingDays, 1.0f) else 0f
         val attendanceSalary = baseSalary * attendanceRatio
 
-        // OT pay — flat day-rate
+        // OT pay — flat day-rate (NOT hourly)
         val dailyRate = if (workingDays > 0) baseSalary / workingDays else 0f
         val otPay     = totalOtDays * dailyRate * otMultiplier
+
+        // Yearly bonus — only in designated bonus month
+        val yearlyBonus = if (bonusMonth in 1..12 && currentMonth == bonusMonth && bonusAmount > 0f)
+            bonusAmount else 0f
 
         val workDays   = fullDays + halfDays
         val absentDays = maxOf(0, daysInMonth - workDays - sundayPaid.toInt())
 
-        val finalSalary = maxOf(0f, attendanceSalary + otPay + bonus - deduction - advance)
+        // Final = attendance + OT + yearlyBonus − advance
+        // Deduction intentionally excluded per HR policy
+        val finalSalary = maxOf(0f, attendanceSalary + otPay + yearlyBonus - advance)
 
         return Result(
             baseSalary       = baseSalary,
             attendanceSalary = attendanceSalary,
             otPay            = otPay,
-            bonus            = bonus,
-            deduction        = deduction,
+            bonus            = yearlyBonus,
             advance          = advance,
             finalSalary      = finalSalary,
             totalPresent     = fullDays,
@@ -150,6 +180,8 @@ object SalaryCalculator {
             absentDays       = absentDays,
             paidHolidays     = sundayPaid,
             otDays           = totalOtDays,
+            otFullDays       = otFullDaysCount,
+            otHalfDays       = otHalfDaysCount,
             attendanceRatio  = attendanceRatio
         )
     }

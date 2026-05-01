@@ -20,19 +20,27 @@ import java.util.*
  *   4–7 hrs  → Half Day  (0.5 days)
  *   ≥ 7 hrs  → Full Day  (1.0 days)
  *
- * OT SESSION (second IN→OUT same day):
- *   < 4 hrs  → No OT        (0 OT days)
- *   4–7 hrs  → Half OT day  (0.5 OT days)
- *   ≥ 7 hrs  → Full OT day  (1.0 OT days)
- *   Max = 1.0 OT day per session regardless of actual hours.
+ * OT SESSION (second IN→OUT same day) — FLAT DAY-RATE, NOT hourly:
+ *   < 4 hrs  → No OT        (0 OT day units)
+ *   4–7 hrs  → Half OT day  (0.5 OT day units)
+ *   ≥ 7 hrs  → Full OT day  (1.0 OT day units)
+ *   Max = 1.0 OT day per session regardless of actual hours worked.
  *
  * OT Pay = otDays × (baseSalary / workingDays) × otMultiplier
- *   — Flat day-rate. NOT hourly.
+ *   — Flat day-rate. NEVER hourly.
+ *
+ * BONUS POLICY:
+ *   Bonus is YEARLY only — paid in employee's designated bonus_month.
+ *   Monthly slips do NOT include bonus unless it is the bonus month.
+ *
+ * DEDUCTION POLICY:
+ *   Deduction is excluded from salary calculation and slip display.
+ *   Only advance is deducted.
  *
  * SUNDAY RULE:
  *   Sat ✔ + Mon ✔ → Full Pay (paidHolidays + 1.0)
  *   Sat ✔ + Mon ✗ → Half Pay (paidHolidays + 0.5)
- *   Sat ✗ + Mon any → No Pay
+ *   Sat ✗         → No Pay
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
@@ -57,12 +65,12 @@ class SalarySlipAutoGenerateWorker(
         Log.d(TAG, "1st of month — starting salary generation")
 
         return try {
-            val prevCal     = Calendar.getInstance(tz).apply { add(Calendar.MONTH, -1) }
-            val monthKey    = fmt.format(prevCal.time)
-            val monthName   = SimpleDateFormat("MMMM", Locale.getDefault()).format(prevCal.time)
-            val year        = SimpleDateFormat("yyyy",  Locale.getDefault()).format(prevCal.time)
-            val targetMonth = prevCal.get(Calendar.MONTH) + 1
-            val targetYear  = prevCal.get(Calendar.YEAR)
+            val prevCal      = Calendar.getInstance(tz).apply { add(Calendar.MONTH, -1) }
+            val monthKey     = fmt.format(prevCal.time)
+            val monthName    = SimpleDateFormat("MMMM", Locale.getDefault()).format(prevCal.time)
+            val year         = SimpleDateFormat("yyyy",  Locale.getDefault()).format(prevCal.time)
+            val targetMonth  = prevCal.get(Calendar.MONTH) + 1
+            val targetYear   = prevCal.get(Calendar.YEAR)
 
             val settingsDoc  = db.collection("settings").document("app").get().await()
             val settings     = settingsDoc.data ?: emptyMap()
@@ -100,7 +108,7 @@ class SalarySlipAutoGenerateWorker(
                     var fullDays   = 0.0
                     var halfDays   = 0.0
                     var absentDays = 0.0
-                    var otDays     = 0.0   // flat OT day units (0 / 0.5 / 1.0)
+                    var otDays     = 0.0   // flat OT day units (0 / 0.5 / 1.0 per session)
                     val presentDates = mutableSetOf<String>()
 
                     for (sDoc in sessionSnap.documents) {
@@ -117,13 +125,19 @@ class SalarySlipAutoGenerateWorker(
                         }
 
                         // OT session — flat day-rate (NOT hourly)
-                        // ≥ 7 hrs = 1.0 OT day, 4–7 hrs = 0.5 OT day, < 4 hrs = 0
+                        // ≥ 7 hrs = 1.0 OT day (even 12 hrs = 1.0 day, NOT 1.71 days)
+                        // 4–7 hrs = 0.5 OT day
+                        // < 4 hrs = 0 OT
                         when {
                             ot >= 7.0 -> otDays += 1.0
                             ot >= 4.0 -> otDays += 0.5
-                            // < 4 hrs: no OT
+                            // < 4 hrs: no OT credited
                         }
                     }
+
+                    // OT display breakdown
+                    val otFullDaysCount = otDays.toInt()
+                    val otHalfDaysCount = if (otDays - otFullDaysCount >= 0.5) 1 else 0
 
                     // Sunday rule
                     var paidHolidays = 0.0
@@ -143,24 +157,32 @@ class SalarySlipAutoGenerateWorker(
                         val monOk   = presentDates.contains(monDate)
 
                         paidHolidays += when {
-                            satOk && monOk  -> 1.0
-                            satOk && !monOk -> 0.5
-                            else            -> 0.0
+                            satOk && monOk  -> 1.0   // Full pay
+                            satOk && !monOk -> 0.5   // Half pay (Sat present, Mon absent)
+                            else            -> 0.0   // No pay
                         }
                     }
 
-                    // Adjustments
+                    // Advance only from adjustments (bonus=yearly, deduction=excluded)
                     val adjSnap = db.collection("salary_adjustments")
                         .whereEqualTo("employee_id", empId)
                         .whereEqualTo("month_key",   monthKey)
                         .get().await()
-                    var bonus = 0.0; var deduction = 0.0; var advance = 0.0
+                    var advance = 0.0
                     for (a in adjSnap.documents) {
                         val ad = a.data ?: continue
-                        bonus     += (ad["bonus"]     as? Number)?.toDouble() ?: 0.0
-                        deduction += (ad["deduction"] as? Number)?.toDouble() ?: 0.0
-                        advance   += (ad["advance"]   as? Number)?.toDouble() ?: 0.0
+                        advance += (ad["advance"] as? Number)?.toDouble() ?: 0.0
+                        // bonus and deduction from adjustments are intentionally ignored
                     }
+
+                    // Yearly bonus — paid only in the employee's designated bonus_month
+                    val bonusType   = emp["bonus_type"]   as? String ?: "none"
+                    val bonusMonth  = (emp["bonus_month"]  as? Number)?.toInt()    ?: 0
+                    val bonusAmount = (emp["bonus_amount"] as? Number)?.toDouble() ?: 0.0
+                    val yearlyBonus = if (bonusType == "yearly"
+                        && bonusMonth in 1..12
+                        && targetMonth == bonusMonth
+                        && bonusAmount > 0.0) bonusAmount else 0.0
 
                     // Salary formula
                     val baseSalary      = (emp["salary"] as? Number)?.toDouble() ?: 0.0
@@ -173,7 +195,8 @@ class SalarySlipAutoGenerateWorker(
                     val dailyRate = if (workingDays > 0) baseSalary / workingDays else 0.0
                     val otPay     = otDays * dailyRate * otMultiplier
 
-                    val finalSal = (attSalary + otPay + bonus - deduction - advance)
+                    // Final = attendance + OT + yearlyBonus − advance (deduction excluded)
+                    val finalSal = (attSalary + otPay + yearlyBonus - advance)
                         .coerceAtLeast(0.0)
 
                     val salaryMap = mapOf(
@@ -188,15 +211,16 @@ class SalarySlipAutoGenerateWorker(
                         "base_salary"       to baseSalary,
                         "attendance_salary" to attSalary,
                         "ot_pay"            to otPay,
-                        "bonus"             to bonus,
-                        "deduction"         to deduction,
+                        "bonus"             to yearlyBonus,
                         "advance"           to advance,
                         "final_salary"      to finalSal,
                         "total_present"     to fullDays,
                         "half_days"         to halfDays,
                         "absent_days"       to absentDays,
                         "paid_holidays"     to paidHolidays,
-                        "ot_days"           to otDays,
+                        "ot_days"           to otDays,          // flat OT day units
+                        "ot_full_days"      to otFullDaysCount, // for display
+                        "ot_half_days"      to otHalfDaysCount, // for display
                         "working_days"      to workingDays,
                         "payment_mode"      to (emp["payment_mode"] ?: "CASH"),
                         "slip_url"          to "",
@@ -209,7 +233,7 @@ class SalarySlipAutoGenerateWorker(
                         .document("${empId}_${monthKey}")
                         .set(salaryMap).await()
 
-                    Log.d(TAG, "$empId: salary saved — ₹%.2f (OT days: $otDays)".format(finalSal))
+                    Log.d(TAG, "$empId: salary saved — ₹%.2f | OT days: $otDays | Bonus: ₹$yearlyBonus".format(finalSal))
                     success++
                 } catch (e: Exception) {
                     Log.e(TAG, "$empId: ERROR — ${e.message}")

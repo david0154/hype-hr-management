@@ -5,7 +5,7 @@ import android.util.Log
 import androidx.work.*
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.nexuzylab.hypehr.util.SalaryCalculator
+import com.nexuzylab.hypehr.utils.SalaryCalculator
 import com.nexuzylab.hypehr.util.PdfUploader
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -16,10 +16,12 @@ import java.util.concurrent.TimeUnit
  * Logic:
  *  1. Fetch all active employees from Firestore.
  *  2. For each employee fetch attendance sessions for the previous month.
- *  3. Calculate salary using SalaryCalculator (12-hr workday rules).
- *  4. Generate PDF, upload to Firebase Storage.
- *  5. Write salary record to Firestore (employees/{id}/salary/{YYYY-MM}).
- *  6. Delete slips older than 12 months (retention policy).
+ *  3. Calculate salary using SalaryCalculator (12-hr workday, OT = flat day-rate).
+ *  4. Bonus = yearly only (paid in employee's bonus_month).
+ *  5. Deduction = excluded from slip and calculation.
+ *  6. Generate PDF, upload to Firebase Storage.
+ *  7. Write salary record to Firestore (employees/{id}/salary/{YYYY-MM}).
+ *  8. Delete slips older than 12 months (retention policy).
  *
  * Developed by David | Nexuzy Lab
  */
@@ -31,11 +33,10 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result {
         Log.d(TAG, "SalarySlipWorker started")
 
-        // Determine previous month
         val cal = Calendar.getInstance().apply { add(Calendar.MONTH, -1) }
-        val year  = cal.get(Calendar.YEAR)
-        val month = cal.get(Calendar.MONTH) + 1           // 1-based
-        val monthKey = "%04d-%02d".format(year, month)   // e.g. "2026-04"
+        val year     = cal.get(Calendar.YEAR)
+        val month    = cal.get(Calendar.MONTH) + 1
+        val monthKey = "%04d-%02d".format(year, month)
 
         return try {
             val employees = fetchActiveEmployees()
@@ -74,7 +75,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     ) {
         val empId = emp["employee_id"] as? String ?: return
 
-        // Check if slip already generated
         val existing = db.collection("employees").document(empId)
             .collection("salary").document(monthKey).get().await()
         if (existing.exists() && existing.getString("slip_url") != null) {
@@ -82,25 +82,25 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             return
         }
 
-        // Fetch sessions for the month
         val sessions = fetchSessions(empId, monthKey)
 
-        // Fetch adjustments (bonus/deduction/advance)
+        // Advance only from adjustments (bonus=yearly from emp record, deduction=excluded)
         val adjustSnap = db.collection("employees").document(empId)
             .collection("adjustments").document(monthKey).get().await()
-        val bonus     = (adjustSnap.getDouble("bonus")     ?: 0.0).toFloat()
-        val deduction = (adjustSnap.getDouble("deduction") ?: 0.0).toFloat()
-        val advance   = (adjustSnap.getDouble("advance")   ?: 0.0).toFloat()
+        val advance = (adjustSnap.getDouble("advance") ?: 0.0).toFloat()
+        // bonus and deduction from adjustments intentionally ignored
 
-        // Fetch app settings
         val settingsSnap = db.collection("settings").document("app").get().await()
         val otMultiplier  = (settingsSnap.getDouble("ot_rate_multiplier") ?: 1.5).toFloat()
         val workingDays   = (settingsSnap.getLong("monthly_working_days")  ?: 26L).toInt()
         val paymentMode   = settingsSnap.getString("payment_mode") ?: "CASH"
 
-        val baseSalary = ((emp["salary"] as? Number)?.toFloat()) ?: 0f
+        val baseSalary   = ((emp["salary"] as? Number)?.toFloat()) ?: 0f
+        // Yearly bonus fields from employee record
+        val bonusType    = emp["bonus_type"]   as? String ?: "none"
+        val bonusMonth   = (emp["bonus_month"]  as? Number)?.toInt()    ?: 0
+        val bonusAmount  = (emp["bonus_amount"] as? Number)?.toFloat()  ?: 0f
 
-        // Calculate salary
         val result = SalaryCalculator.calculate(
             baseSalary    = baseSalary,
             sessions      = sessions,
@@ -108,32 +108,29 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             month         = month,
             workingDays   = workingDays,
             otMultiplier  = otMultiplier,
-            bonus         = bonus,
-            deduction     = deduction,
-            advance       = advance
+            advance       = advance,
+            bonusMonth    = bonusMonth,
+            bonusAmount   = bonusAmount,
+            currentMonth  = month
         )
 
-        // Fetch company details
-        val companySnap = db.collection("settings").document("company").get().await()
+        val companySnap    = db.collection("settings").document("company").get().await()
         val companyName    = companySnap.getString("name")    ?: "Hype Pvt Ltd"
         val companyAddress = companySnap.getString("address") ?: ""
 
-        // Build slip URL path
         val slipPath = "salary_slips/$empId/${monthKey}.pdf"
 
-        // Upload PDF to Firebase Storage
         val slipUrl = PdfUploader.generateAndUpload(
-            context       = applicationContext,
-            employee      = emp,
-            salaryResult  = result,
-            companyName   = companyName,
+            context        = applicationContext,
+            employee       = emp,
+            salaryResult   = result,
+            companyName    = companyName,
             companyAddress = companyAddress,
-            monthKey      = monthKey,
-            paymentMode   = paymentMode,
-            storagePath   = slipPath
+            monthKey       = monthKey,
+            paymentMode    = paymentMode,
+            storagePath    = slipPath
         )
 
-        // Save salary record to Firestore
         val salaryRecord = hashMapOf(
             "employee_id"       to empId,
             "month"             to monthKey,
@@ -143,14 +140,15 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             "attendance_salary" to result.attendanceSalary,
             "ot_pay"            to result.otPay,
             "bonus"             to result.bonus,
-            "deduction"         to result.deduction,
             "advance"           to result.advance,
             "final_salary"      to result.finalSalary,
             "total_present"     to result.totalPresent,
             "half_days"         to result.halfDays,
             "absent_days"       to result.absentDays,
             "paid_holidays"     to result.paidHolidays,
-            "ot_hours"          to result.otHours,
+            "ot_days"           to result.otDays,          // flat OT day units
+            "ot_full_days"      to result.otFullDays,      // for display
+            "ot_half_days"      to result.otHalfDays,      // for display
             "payment_mode"      to paymentMode,
             "slip_url"          to slipUrl,
             "generated_at"      to com.google.firebase.Timestamp.now()
@@ -160,11 +158,10 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             .collection("salary").document(monthKey)
             .set(salaryRecord).await()
 
-        // Also write to global salary collection for admin visibility
         db.collection("salary").document("${empId}_${monthKey}")
             .set(salaryRecord).await()
 
-        Log.d(TAG, "Salary slip saved for $empId / $monthKey — final: ${result.finalSalary}")
+        Log.d(TAG, "Salary slip saved for $empId / $monthKey — final: ${result.finalSalary} | OT days: ${result.otDays} | Bonus: ${result.bonus}")
     }
 
     private suspend fun fetchSessions(empId: String, monthKey: String): List<Map<String, Any>> {
@@ -176,10 +173,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         return snap.documents.mapNotNull { it.data }
     }
 
-    /**
-     * Delete salary slips older than 12 months from Firestore + Storage.
-     * Retention = 12 months as per product spec.
-     */
     private suspend fun cleanupOldSlips() {
         val cutoff = Calendar.getInstance().apply { add(Calendar.MONTH, -12) }
         val cutoffKey = "%04d-%02d".format(
@@ -187,8 +180,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             cutoff.get(Calendar.MONTH) + 1
         )
         Log.d(TAG, "Cleaning up slips older than $cutoffKey")
-        // Deletion is handled server-side by Cloud Functions / PHP cron.
-        // This worker only purges Firestore records for the logged-in employee.
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val salarySnaps = db.collection("employees").document(uid)
             .collection("salary")
@@ -203,10 +194,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     companion object {
         const val WORK_NAME = "HypeSalarySlipWork"
 
-        /**
-         * Schedule this worker to run on the 1st of every month at 2:00 AM.
-         * Call from Application.onCreate().
-         */
         fun schedule(context: Context) {
             val now = Calendar.getInstance()
             val target = Calendar.getInstance().apply {
@@ -214,7 +201,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
                 set(Calendar.HOUR_OF_DAY, 2)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
-                // If 1st has passed this month, schedule for next month
                 if (before(now)) add(Calendar.MONTH, 1)
             }
             val delay = target.timeInMillis - now.timeInMillis
@@ -238,7 +224,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     }
 }
 
-// Extension to use coroutines with Tasks
 suspend fun <T> com.google.android.gms.tasks.Task<T>.await(): T {
     return kotlinx.coroutines.tasks.await(this)
 }
