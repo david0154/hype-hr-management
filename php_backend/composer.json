@@ -1,20 +1,15 @@
 {
-    "name": "david0154/hype-hr-backend",
-    "description": "Hype HR Management — PHP Automation Backend | Salary Slip PDF + Email + SMS",
-    "type": "project",
-    "require": {
-        "php": ">=8.0",
-        "fpdf/fpdf": "^1.86",
-        "phpmailer/phpmailer": "^6.9",
-        "kreait/firebase-php": "^7.5"
-    },
-    "autoload": {
-        "psr-4": {
-            "PHPMailer\\PHPMailer\\": "vendor/phpmailer/src/"
-        }
-    },
-    "authors": [
-        { "name": "David", "homepage": "https://github.com/david0154" }
-    ],
-    "license": "MIT"
+  "name": "nexuzylab/hype-hr-backend",
+  "description": "Hype HR Management System — PHP Automation Backend",
+  "type": "project",
+  "require": {
+    "php": ">=7.4",
+    "phpmailer/phpmailer": "^6.8",
+    "setasign/fpdf": "^1.8"
+  },
+  "autoload": {
+    "psr-4": {
+      "HypeHR\\": "src/"
+    }
+  }
 }

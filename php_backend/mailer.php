@@ -1,103 +1,123 @@
 <?php
 /**
- * Hype HR Management — Email Mailer (PHPMailer wrapper)
- * Sends salary slip via company SMTP credentials stored in Firebase settings
+ * Hype HR Management — Email Sender
+ * Uses PHPMailer (composer require phpmailer/phpmailer).
+ * SMTP settings loaded dynamically from Firestore settings/smtp.
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/firebase_api.php';
 require_once __DIR__ . '/vendor/autoload.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-function sendSalarySlipEmail(
-    array $smtpConfig,
-    array $employee,
-    array $salaryData,
-    array $company,
-    string $pdfPath = ''
-): array {
-    if (empty($employee['email'])) {
-        return ['success' => false, 'message' => 'Employee email missing'];
+function get_smtp_settings(): array {
+    $settings = firebase_get_document('settings/smtp');
+    return [
+        'host'      => $settings['host']      ?? SMTP_DEFAULT_HOST,
+        'port'      => (int)($settings['port'] ?? SMTP_DEFAULT_PORT),
+        'username'  => $settings['username']  ?? SMTP_DEFAULT_USER,
+        'password'  => $settings['password']  ?? SMTP_DEFAULT_PASS,
+        'from'      => $settings['from_email'] ?? SMTP_DEFAULT_FROM,
+        'from_name' => $settings['from_name'] ?? SMTP_DEFAULT_FROM_NAME,
+        'enabled'   => (bool)($settings['enabled'] ?? false),
+    ];
+}
+
+/**
+ * Send salary slip email to employee.
+ * @param string $toEmail     Recipient email
+ * @param string $toName      Recipient name
+ * @param string $month       e.g. "April 2026"
+ * @param string $pdfPath     Local path to PDF
+ * @param float  $finalSalary Net salary amount
+ * @param string $companyName
+ * @return bool
+ */
+function send_salary_slip_email(
+    string $toEmail,
+    string $toName,
+    string $month,
+    string $pdfPath,
+    float  $finalSalary,
+    string $companyName
+): bool {
+    $smtp = get_smtp_settings();
+    if (!$smtp['enabled'] || empty($smtp['username'])) {
+        error_log("[HypeHR] SMTP not configured or disabled. Skipping email to {$toEmail}");
+        return false;
     }
+    if (empty($toEmail)) return false;
 
     $mail = new PHPMailer(true);
-
     try {
         $mail->isSMTP();
-        $mail->Host = $smtpConfig['host'] ?? '';
-        $mail->Port = (int)($smtpConfig['port'] ?? 587);
-        $mail->SMTPAuth = true;
-        $mail->Username = $smtpConfig['user'] ?? '';
-        $mail->Password = $smtpConfig['pass'] ?? '';
-        $mail->SMTPSecure = (($smtpConfig['secure'] ?? 'tls') === 'ssl')
-            ? PHPMailer::ENCRYPTION_SMTPS
-            : PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->CharSet = 'UTF-8';
-
-        $fromEmail = $smtpConfig['from_email'] ?? ($smtpConfig['user'] ?? SUPPORT_MAIL);
-        $fromName = $smtpConfig['from_name'] ?? ($company['name'] ?? APP_NAME);
-
-        $mail->setFrom($fromEmail, $fromName);
-        $mail->addAddress($employee['email'], $employee['name'] ?? '');
-        $mail->addReplyTo($fromEmail, $fromName);
-
-        if ($pdfPath && file_exists($pdfPath)) {
-            $filename = 'SalarySlip_' . ($employee['employee_id'] ?? 'EMP') . '_' . ($salaryData['month'] ?? '') . '_' . ($salaryData['year'] ?? '') . '.pdf';
-            $mail->addAttachment($pdfPath, $filename);
-        }
-
-        $month = $salaryData['month'] ?? '';
-        $year = $salaryData['year'] ?? '';
-        $final = number_format((float)($salaryData['final_salary'] ?? 0), 2);
-        $slipUrl = $salaryData['slip_url'] ?? '';
-        $empName = $employee['name'] ?? 'Employee';
-        $compName = $company['name'] ?? APP_NAME;
-        $compAddr = $company['address'] ?? '';
-        $compEmail = $company['email'] ?? SUPPORT_MAIL;
-        $payMode = $salaryData['payment_mode'] ?? 'CASH';
-
+        $mail->Host       = $smtp['host'];
+        $mail->SMTPAuth   = true;
+        $mail->Username   = $smtp['username'];
+        $mail->Password   = $smtp['password'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = $smtp['port'];
+        $mail->setFrom($smtp['from'], $smtp['from_name']);
+        $mail->addAddress($toEmail, $toName);
         $mail->isHTML(true);
-        $mail->Subject = "Salary Slip - $month $year | $compName";
-
-        $downloadBtn = $slipUrl
-            ? "<p style='text-align:center;margin:20px 0'><a href='$slipUrl' style='display:inline-block;background:#f77f00;color:#fff;padding:13px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:14px'>Download Salary Slip PDF</a></p><p style='font-size:12px;color:#999;text-align:center'>Available for download for <strong>1 year</strong> from generation date.</p>"
-            : '';
-
-        $mail->Body = <<<HTML
-<!DOCTYPE html><html><head><meta charset='UTF-8'>
-<style>
-body{font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:0}
-.c{max-width:600px;margin:30px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.1)}
-.h{background:#0d1b2a;padding:28px 30px;text-align:center}
-.h h1{color:#f77f00;margin:0;font-size:22px}.h p{color:#aaa;margin:5px 0 0;font-size:13px}
-.b{padding:30px}.sb{background:#f0faf4;border:2px solid #2e8b57;border-radius:8px;padding:18px 24px;margin:20px 0;text-align:center}
-.sb .amt{font-size:32px;font-weight:bold;color:#2e8b57}.sb .lbl{color:#555;font-size:13px;margin-top:4px}
-table{width:100%;border-collapse:collapse;margin:16px 0}td{padding:9px 14px;border:1px solid #e0e0e0;font-size:13px}td:first-child{background:#f7f7f7;font-weight:bold;width:50%}
-.ft{background:#0d1b2a;padding:16px 30px;text-align:center;color:#666;font-size:11px}.ft a{color:#f77f00;text-decoration:none}
-</style></head><body><div class='c'><div class='h'><h1>$compName</h1><p>$compAddr</p></div><div class='b'>
-<h2 style='color:#0d1b2a'>Dear $empName,</h2>
-<p>Your salary slip for <strong>$month $year</strong> is ready.</p>
-<div class='sb'><div class='amt'>Rs. $final</div><div class='lbl'>Net Salary &mdash; $month $year</div></div>
-<table>
-<tr><td>Employee</td><td>$empName</td></tr>
-<tr><td>Month</td><td>$month $year</td></tr>
-<tr><td>Final Salary</td><td><strong>Rs. $final</strong></td></tr>
-<tr><td>Payment Mode</td><td>$payMode</td></tr>
-</table>
-$downloadBtn
-<p style='font-size:12px;color:#888'>For queries, contact HR or reply to this email.</p>
-</div><div class='ft'><p>&copy; $year $compName &nbsp;|&nbsp; <a href='mailto:$compEmail'>$compEmail</a></p>
-<p>Developed by David &nbsp;|&nbsp; <a href='https://github.com/david0154'>Nexuzy Lab</a> &nbsp;|&nbsp; Support: <a href='mailto:nexuzylab@gmail.com'>nexuzylab@gmail.com</a></p>
-</div></div></body></html>
-HTML;
-        $mail->AltBody = "Dear $empName, your salary of Rs. $final for $month $year is ready. Download: $slipUrl";
-
+        $mail->Subject = "Your Salary Slip for {$month} — {$companyName}";
+        $mail->Body    = email_body_html($toName, $month, $finalSalary, $companyName);
+        $mail->AltBody = "Dear {$toName}, Your salary slip for {$month} is attached. Net Pay: Rs. " . number_format($finalSalary, 2);
+        if (file_exists($pdfPath)) $mail->addAttachment($pdfPath);
         $mail->send();
-        return ['success' => true, 'message' => 'Email sent'];
+        error_log("[HypeHR] Salary slip email sent to {$toEmail} for {$month}");
+        return true;
     } catch (Exception $e) {
-        error_log('[HypeHR Mailer] Failed: ' . ($employee['email'] ?? '') . ' - ' . $e->getMessage());
-        return ['success' => false, 'message' => $e->getMessage()];
+        error_log("[HypeHR] Email failed to {$toEmail}: {$e->getMessage()}");
+        return false;
     }
+}
+
+function email_body_html(string $name, string $month, float $salary, string $company): string {
+    $amt = 'Rs. ' . number_format($salary, 2);
+    return <<<HTML
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+        <div style="background:#01696f;padding:24px;text-align:center;">
+            <h1 style="color:#fff;margin:0;">{$company}</h1>
+            <p style="color:#e0f4f4;margin:4px 0 0;">Salary Slip — {$month}</p>
+        </div>
+        <div style="padding:24px;background:#f9f8f5;">
+            <p style="font-size:16px;">Dear <strong>{$name}</strong>,</p>
+            <p>Your salary slip for <strong>{$month}</strong> has been generated.</p>
+            <div style="background:#fff;border-radius:8px;padding:16px;margin:16px 0;border:1px solid #e0e0e0;">
+                <p style="margin:0;font-size:18px;color:#01696f;"><strong>Net Salary: {$amt}</strong></p>
+            </div>
+            <p>Please find your detailed salary slip attached as a PDF.</p>
+            <p style="color:#888;font-size:12px;">This is an automated message from Hype HR Management System.</p>
+        </div>
+    </div>
+    HTML;
+}
+
+/**
+ * Optional SMS via Twilio.
+ */
+function send_salary_sms(string $mobile, string $name, string $month, float $salary): bool {
+    if (!SMS_ENABLED || empty(TWILIO_SID)) return false;
+    if (empty($mobile)) return false;
+
+    $url  = "https://api.twilio.com/2010-04-01/Accounts/" . TWILIO_SID . "/Messages.json";
+    $body = "Hi {$name}, your salary slip for {$month} is ready. Net Pay: Rs. " . number_format($salary, 2) . ". Download via Hype HR app.";
+    $data = ['To' => '+91' . ltrim($mobile, '0+'), 'From' => TWILIO_FROM, 'Body' => $body];
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => http_build_query($data),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_USERPWD        => TWILIO_SID . ':' . TWILIO_TOKEN,
+    ]);
+    $result = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    error_log("[HypeHR] SMS to {$mobile}: HTTP {$status}");
+    return $status === 201;
 }
