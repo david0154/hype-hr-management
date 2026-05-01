@@ -1,174 +1,96 @@
 <?php
 /**
- * Hype HR Management — Monthly Salary Cron Job
+ * cron_job.php
  *
- * Crontab (runs 1st of each month at 00:05 IST):
- *   5 0 1 * * TZ=Asia/Kolkata php /var/www/html/php_backend/cron_job.php >> /var/log/hype_hr_cron.log 2>&1
+ * Run on the 1st of every month (midnight IST) via crontab:
+ *   5 0 1 * * TZ=Asia/Kolkata php /path/to/cron_job.php
  *
- * Process:
- *  1. Fetch active employees from Firestore
- *  2. Calculate previous-month attendance (sessions collection)
- *  3. Apply exact Duty/OT/Sunday rules (12-hour workday, OT = flat day-rate)
- *  4. Calculate salary: (Base × AttRatio) + OT + YearlyBonus − Advance
- *     NOTE: Deduction is excluded from salary slip per HR policy.
- *  5. Generate branded PDF (company name + address + logo)
- *  6. Upload PDF to Firebase Storage (1-year signed URL)
- *  7. Save salary record to Firestore
- *  8. Email PDF to employee (if SMTP configured + employee has email)
- *  9. SMS alert (optional)
- * 10. Cleanup slips older than 12 months
+ * Also run daily for religion-based bonus + advance date triggers.
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 
+define('HYPE_CRON', true);
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/salary_generator.php';
-require_once __DIR__ . '/mailer.php';
 require_once __DIR__ . '/firebase_api.php';
-require_once __DIR__ . '/sms_service.php';
+require_once __DIR__ . '/salary_calculator.php';
+require_once __DIR__ . '/salary_generator.php';
 
-// ── Cron lock (prevent double-run) ───────────────────────────────────────────
-if (file_exists(CRON_LOCK_FILE)) {
-    $age = time() - filemtime(CRON_LOCK_FILE);
-    if ($age < 3600) { log_cron('SKIP: Cron already running (lock age ' . $age . 's)'); exit; }
-    unlink(CRON_LOCK_FILE);
-}
-file_put_contents(CRON_LOCK_FILE, getmypid());
-register_shutdown_function(fn() => file_exists(CRON_LOCK_FILE) && unlink(CRON_LOCK_FILE));
+date_default_timezone_set('Asia/Kolkata');
 
-// ── Date context — previous month ─────────────────────────────────────────────
-$now       = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
-$prev      = clone $now;
-$prev->modify('first day of last month');
+$today_day   = (int)date('j');
+$today_month = (int)date('n');
+$today_year  = (int)date('Y');
+$today_date  = date('Y-m-d');
 
-$targetMonth    = (int)$prev->format('n');
-$targetYear     = (int)$prev->format('Y');
-$targetMonthStr = $prev->format('F');       // "April"
-$targetKey      = $prev->format('Y-m');     // "2026-04"
+log_cron("=== Hype HR Cron Start: {$today_date} ===");
 
-log_cron('=== Hype HR Salary Cron Started: ' . $now->format('Y-m-d H:i:s') . ' IST ===');
-log_cron("Target month: {$targetMonthStr} {$targetYear} ({$targetKey})");
-
-// ── Load Firestore config ─────────────────────────────────────────────────────
-$fb       = new HypeFirebaseAPI();
-$settings = $fb->getSettings();
-$company  = $fb->getCompanyDetails();
-$smtpCfg  = $fb->getSmtpConfig();
-$sms      = new HypeSmsService();
-
-log_cron('Company: ' . ($company['name'] ?? 'N/A') . ' | ' . ($company['address'] ?? ''));
-log_cron('SMTP: ' . (!empty($smtpCfg['enabled']) ? 'configured (' . ($smtpCfg['host'] ?? '') . ')' : 'not set'));
-log_cron('SMS : ' . ($sms->isEnabled() ? SMS_PROVIDER . ' enabled' : 'disabled'));
-
-$employees    = $fb->getActiveEmployees();
-$successCount = $failCount = 0;
-log_cron('Active employees: ' . count($employees));
-
-foreach ($employees as $employee) {
-    $empId   = $employee['employee_id'] ?? null;
-    $empName = $employee['name']        ?? 'Unknown';
-    if (!$empId) { log_cron('SKIP: missing employee_id'); continue; }
-
-    log_cron("── Processing: {$empId} — {$empName}");
-
-    try {
-        // 1. Skip if already generated
-        if ($fb->salarySlipExists($empId, $targetKey)) {
-            log_cron('  SKIP: slip already exists for ' . $targetKey);
-            continue;
-        }
-
-        // 2. Attendance summary — returns ot_days (flat units), NOT ot_hours
-        $summary = $fb->getAttendanceSummary($empId, $targetYear, $targetMonth);
-        log_cron(sprintf(
-            '  Att → Present:%.1f  Half:%.1f  Absent:%.1f  PaidHol:%.1f  OT days:%.1f',
-            $summary['total_present'], $summary['half_days'],
-            $summary['absent_days'],   $summary['paid_holidays'],
-            $summary['ot_days']        // flat OT day units
-        ));
-
-        // 3. Advance only (bonus=yearly from employee record, deduction=excluded)
-        $adj     = $fb->getSalaryAdjustments($empId, $targetKey);
-        // Only carry advance from monthly adjustments; bonus comes from employee record
-        $summary['advance'] = $adj['advance'] ?? 0.0;
-        // Do NOT carry adj['bonus'] or adj['deduction'] — bonus is yearly, deduction excluded
-
-        // 4. Calculate salary (pass currentMonth for yearly bonus check)
-        $salaryData = calculateSalary($employee, $summary, $settings, $targetMonth);
-        $salaryData['month']        = $targetMonthStr;
-        $salaryData['month_num']    = $targetMonth;
-        $salaryData['year']         = $targetYear;
-        $salaryData['payment_mode'] = $employee['payment_mode'] ?? 'CASH';
-        log_cron('  Salary → Rs. ' . number_format($salaryData['final_salary'], 2)
-            . ' | OT days: ' . $salaryData['ot_days']
-            . ' | Bonus: Rs. ' . $salaryData['bonus']);
-
-        // 5. Generate PDF
-        $pdfFile = "salary_{$empId}_{$targetKey}.pdf";
-        $pdfPath = PDF_TEMP_DIR . $pdfFile;
-        generateSalarySlipPDF($employee, $salaryData, $company, $pdfPath);
-        log_cron('  PDF generated: ' . $pdfFile);
-
-        // 6. Upload to Firebase Storage
-        $storagePath = "salary_slips/{$targetYear}/{$targetMonth}/{$pdfFile}";
-        $slipUrl     = $fb->uploadPdfToStorage($pdfPath, $storagePath);
-        $salaryData['slip_url'] = $slipUrl;
-        log_cron('  Uploaded → ' . $storagePath);
-
-        // 7. Save to Firestore
-        $expiresAt = date('c', strtotime('+' . SLIP_RETENTION_MONTHS . ' months'));
-        $fb->saveSalaryRecord($empId, $targetKey, array_merge($salaryData, [
-            'employee_id'  => $empId,
-            'month_key'    => $targetKey,
-            'generated_at' => date('c'),
-            'expires_at'   => $expiresAt,
-            'source'       => 'php_cron',
-        ]));
-        log_cron('  Saved to Firestore (expires: ' . $expiresAt . ')');
-
-        // 8. Email (if employee has email + SMTP configured)
-        if (!empty($employee['email']) && !empty($smtpCfg['enabled'])) {
-            $sent = send_salary_slip_email(
-                $employee['email'],
-                $empName,
-                $targetMonthStr . ' ' . $targetYear,
-                $pdfPath,
-                (float)$salaryData['final_salary'],
-                $company['name'] ?? 'Hype Pvt Ltd'
-            );
-            log_cron('  Email ' . ($sent ? 'sent → ' . $employee['email'] : 'FAILED (check SMTP)'));
-        } else {
-            log_cron('  Email skipped (no email or SMTP not enabled)');
-        }
-
-        // 9. SMS (optional)
-        if ($sms->isEnabled() && !empty($employee['mobile'])) {
-            $smsOk = $sms->sendSalaryAlert($employee, $salaryData, $company);
-            log_cron('  SMS ' . ($smsOk ? 'sent → ' : 'FAILED → ') . $employee['mobile']);
-        }
-
-        // 10. Cleanup local PDF
-        if (file_exists($pdfPath)) unlink($pdfPath);
-
-        $successCount++;
-
-    } catch (Throwable $e) {
-        log_cron('  ERROR [' . $empId . ']: ' . $e->getMessage());
-        log_cron('  ' . $e->getTraceAsString());
-        $failCount++;
-    }
-}
-
-// ── Cleanup expired slips ────────────────────────────────────────────────────
 try {
-    $deleted = $fb->cleanupExpiredSlips();
-    log_cron("Cleaned {$deleted} expired slip(s) from Storage");
+    $api      = new HypeFirebaseAPI();
+    $settings = $api->getAllSettings();
+    $employees = $api->getActiveEmployees();
+
+    log_cron('Active employees: ' . count($employees));
+
+    // ── 1. Monthly salary slip (1st of month) ─────────────────────────────────
+    if ($today_day === 1) {
+        log_cron('--- Monthly Salary Slip Generation ---');
+        // Generate for PREVIOUS month
+        $slip_month = $today_month === 1 ? 12 : $today_month - 1;
+        $slip_year  = $today_month === 1 ? $today_year - 1 : $today_year;
+        $results    = ['ok'=>0, 'skip'=>0, 'fail'=>0];
+
+        foreach ($employees as $emp) {
+            $res = processEmployeeSalary(
+                $emp['employee_id'], $slip_month, $slip_year, $api
+            );
+            if ($res['success'])                      $results['ok']++;
+            elseif ($res['message'] === 'Slip already exists') $results['skip']++;
+            else { $results['fail']++; log_cron('FAIL ' . $emp['employee_id'] . ': ' . $res['message']); }
+        }
+        log_cron("Salary slips → OK:{$results['ok']} SKIP:{$results['skip']} FAIL:{$results['fail']}");
+    }
+
+    // ── 2. Religion-based bonus trigger (any day) ─────────────────────────────
+    // Process bonus for employees whose religion bonus date = today
+    $bonus_cfg = $settings['bonus'] ?? [];
+    if (!empty($bonus_cfg)) {
+        $bonus_month = $today_month;
+        $bonus_day   = $today_day;
+        $bonus_count = 0;
+        foreach ($employees as $emp) {
+            $religion = trim($emp['religion'] ?? 'Other');
+            if (isBonusDateToday($religion, $bonus_month, $bonus_day, $bonus_cfg)) {
+                // Re-generate / update salary record for current month with bonus
+                $res = processEmployeeSalary(
+                    $emp['employee_id'], $today_month, $today_year, $api
+                );
+                if ($res['success']) $bonus_count++;
+            }
+        }
+        if ($bonus_count > 0)
+            log_cron("Religion bonus triggered for {$bonus_count} employee(s)");
+    }
+
+    // ── 3. Cleanup expired salary slips (>12 months) ─────────────────────────
+    if ($today_day === 1) {
+        $deleted = $api->cleanupExpiredSlips();
+        log_cron("Cleaned up {$deleted} expired slip(s)");
+    }
+
+    log_cron('=== Hype HR Cron End ===');
+
 } catch (Throwable $e) {
-    log_cron('Cleanup error: ' . $e->getMessage());
+    log_cron('FATAL: ' . $e->getMessage());
+    exit(1);
 }
 
-log_cron('=== DONE — Success: ' . $successCount . ' | Failed: ' . $failCount . " ===\n");
 
 function log_cron(string $msg): void {
-    echo '[' . date('H:i:s') . '] ' . $msg . PHP_EOL;
+    $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . PHP_EOL;
+    echo $line;
+    $logFile = __DIR__ . '/temp/cron.log';
+    if (is_writable(dirname($logFile))) {
+        file_put_contents($logFile, $line, FILE_APPEND);
+    }
 }
