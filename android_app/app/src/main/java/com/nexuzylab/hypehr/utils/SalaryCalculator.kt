@@ -3,24 +3,26 @@ package com.nexuzylab.hypehr.utils
 import java.util.*
 
 /**
- * SalaryCalculator — Canonical Kotlin implementation of all Hype HR salary rules.
+ * SalaryCalculator — Canonical Kotlin salary rules for Hype HR.
  *
- * DUTY SESSION (First IN→OUT each day, 12-hr workday):
- *   < 4 hrs  → Absent   (0 days)
- *   4–7 hrs  → Half Day (0.5 days)
- *   ≥ 7 hrs  → Full Day (1 day)
+ * DUTY SESSION (first IN→OUT per day, 12-hr workday):
+ *   < 4 hrs  → Absent    (0)
+ *   4–7 hrs  → Half Day  (0.5 days)
+ *   ≥ 7 hrs  → Full Day  (1.0 days)
  *
- * OT SESSION (Second IN→OUT same day):
- *   < 4 hrs  → No OT          (0 hrs)
- *   4–7 hrs  → Half OT        (4 hrs credited)
- *   ≥ 7 hrs  → Full OT        (actual hours counted)
+ * OT SESSION (second IN→OUT same day):
+ *   < 4 hrs  → No OT        (0 OT days)
+ *   4–7 hrs  → Half OT day  (0.5 OT days)
+ *   ≥ 7 hrs  → Full OT day  (1.0 OT days)
+ *   Max = 1.0 OT day per session regardless of actual hours worked.
+ *
+ * OT Pay = otDays × (baseSalary / workingDays) × otMultiplier
+ *   — Flat day-rate. NOT hourly.
  *
  * SUNDAY RULE:
  *   Sat present + Mon present → Full Pay  (1.0 paid holiday)
  *   Sat present + Mon absent  → Half Pay  (0.5 paid holiday)
  *   Sat absent  (any Mon)     → No Pay    (0)
- *
- * OT Hourly Rate = (baseSalary / workingDays / 12) × otMultiplier
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
@@ -38,7 +40,7 @@ object SalaryCalculator {
         val halfDays:         Int,
         val absentDays:       Int,
         val paidHolidays:     Float,
-        val otHours:          Float,
+        val otDays:           Float,   // flat OT day units (0 / 0.5 / 1.0 per session)
         val attendanceRatio:  Float
     )
 
@@ -54,47 +56,44 @@ object SalaryCalculator {
         advance:      Float = 0f
     ): Result {
 
-        // ── Group sessions by date ──────────────────────────────────────────
+        // ── Group sessions by date ─────────────────────────────────────────────
         val byDate = mutableMapOf<String, MutableList<Map<String, Any>>>()
         for (s in sessions) {
             val date = s["date"] as? String ?: continue
             byDate.getOrPut(date) { mutableListOf() }.add(s)
         }
 
-        data class DayResult(val duty: Float, val ot: Float)
+        data class DayResult(val duty: Float, val otDay: Float)
         val dayResults = mutableMapOf<String, DayResult>()
 
         for ((date, daySessions) in byDate) {
             val dutyHrs = (daySessions[0]["duty_hours"] as? Number)?.toFloat() ?: 0f
             val otHrs   = (daySessions[0]["ot_hours"]   as? Number)?.toFloat() ?: 0f
 
-            // Duty session
+            // Duty: 0 / 0.5 / 1.0
             val duty = when {
                 dutyHrs >= 7f -> 1.0f
                 dutyHrs >= 4f -> 0.5f
                 else          -> 0.0f
             }
-            // OT session
-            val ot = when {
-                otHrs >= 7f -> otHrs   // Full OT: actual hours
-                otHrs >= 4f -> 4.0f   // Half OT: 4 hrs credited
-                else        -> 0.0f   // < 4 hrs: no OT
+            // OT: flat day units — NOT actual hours
+            val otDay = when {
+                otHrs >= 7f -> 1.0f   // Full OT day
+                otHrs >= 4f -> 0.5f   // Half OT day
+                else        -> 0.0f   // No OT
             }
 
-            // Skip Sundays — handled by Sunday rule below
+            // Skip Sundays — handled by Sunday rule
             val cal = Calendar.getInstance().apply {
                 val parts = date.split("-")
                 set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
             }
             if (cal.get(Calendar.DAY_OF_WEEK) != Calendar.SUNDAY) {
-                dayResults[date] = DayResult(duty, ot)
+                dayResults[date] = DayResult(duty, otDay)
             }
         }
 
-        // ── Sunday Rule ──────────────────────────────────────────────────────
-        // Sat present + Mon present → 1.0 (Full Pay)
-        // Sat present + Mon absent  → 0.5 (Half Pay)
-        // Sat absent  (any Mon)     → 0.0 (No Pay)
+        // ── Sunday Rule ────────────────────────────────────────────────────────
         var sundayPaid = 0f
         val cal = Calendar.getInstance().apply { set(year, month - 1, 1) }
         val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
@@ -112,29 +111,29 @@ object SalaryCalculator {
                 val monPresent = (dayResults[monDate]?.duty ?: 0f) > 0f
 
                 sundayPaid += when {
-                    satPresent && monPresent  -> 1.0f  // Full Pay
-                    satPresent && !monPresent -> 0.5f  // Half Pay
-                    else                     -> 0.0f  // No Pay
+                    satPresent && monPresent  -> 1.0f
+                    satPresent && !monPresent -> 0.5f
+                    else                     -> 0.0f
                 }
             }
             cal.add(Calendar.DAY_OF_MONTH, 1)
         }
 
-        // ── Salary calculation ───────────────────────────────────────────────
+        // ── Salary calculation ─────────────────────────────────────────────────
         val fullDays = dayResults.values.count { it.duty == 1.0f }
         val halfDays = dayResults.values.count { it.duty == 0.5f }
-        val totalOt  = dayResults.values.sumOf { it.ot.toDouble() }.toFloat()
+        val totalOtDays = dayResults.values.sumOf { it.otDay.toDouble() }.toFloat()
 
-        val effectiveDays   = fullDays + halfDays * 0.5f + sundayPaid
-        val attendanceRatio = if (workingDays > 0) minOf(effectiveDays / workingDays, 1.0f) else 0f
+        val effectiveDays    = fullDays + halfDays * 0.5f + sundayPaid
+        val attendanceRatio  = if (workingDays > 0) minOf(effectiveDays / workingDays, 1.0f) else 0f
         val attendanceSalary = baseSalary * attendanceRatio
 
-        // 12-hour workday OT rate
-        val hourlyRate = if (workingDays > 0) baseSalary / workingDays / 12f else 0f
-        val otPay      = totalOt * hourlyRate * otMultiplier
+        // OT pay — flat day-rate
+        val dailyRate = if (workingDays > 0) baseSalary / workingDays else 0f
+        val otPay     = totalOtDays * dailyRate * otMultiplier
 
-        val workDays    = fullDays + halfDays
-        val absentDays  = maxOf(0, daysInMonth - workDays - sundayPaid.toInt())
+        val workDays   = fullDays + halfDays
+        val absentDays = maxOf(0, daysInMonth - workDays - sundayPaid.toInt())
 
         val finalSalary = maxOf(0f, attendanceSalary + otPay + bonus - deduction - advance)
 
@@ -150,7 +149,7 @@ object SalaryCalculator {
             halfDays         = halfDays,
             absentDays       = absentDays,
             paidHolidays     = sundayPaid,
-            otHours          = totalOt,
+            otDays           = totalOtDays,
             attendanceRatio  = attendanceRatio
         )
     }

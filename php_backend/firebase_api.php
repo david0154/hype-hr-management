@@ -7,7 +7,7 @@
 
 require_once __DIR__ . '/config.php';
 
-// ── JWT / OAuth2 ──────────────────────────────────────────────────────────────
+// ── JWT / OAuth2 ─────────────────────────────────────────────────────────────
 function getFirebaseAccessToken(): string {
     static $cachedToken = null;
     static $tokenExpiry = 0;
@@ -60,7 +60,7 @@ function b64u(string $data): string {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
 }
 
-// ── Firestore REST helpers ────────────────────────────────────────────────────
+// ── Firestore REST helpers ───────────────────────────────────────────────────
 function firestoreUrl(string $path): string {
     return 'https://firestore.googleapis.com/v1/projects/' . FIREBASE_PROJECT_ID
          . '/databases/(default)/documents/' . ltrim($path, '/');
@@ -144,8 +144,8 @@ function uploadToFirebaseStorage(string $localPath, string $remotePath): string 
     $token   = getFirebaseAccessToken();
     $bucket  = FIREBASE_STORAGE_BUCKET;
     $encoded = rawurlencode($remotePath);
-    $url     = "https://storage.googleapis.com/upload/storage/v1/b/{$bucket}/o".
-               "?uploadType=media&name={$encoded}";
+    $url     = "https://storage.googleapis.com/upload/storage/v1/b/{$bucket}/o"
+             . "?uploadType=media&name={$encoded}";
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -181,7 +181,7 @@ function deleteFromFirebaseStorage(string $url): void {
     curl_close($ch);
 }
 
-// ── HypeFirebaseAPI class ─────────────────────────────────────────────────────
+// ── HypeFirebaseAPI class ────────────────────────────────────────────────────
 class HypeFirebaseAPI {
 
     public function getSettings(): array {
@@ -233,24 +233,28 @@ class HypeFirebaseAPI {
      * getAttendanceSummary()
      *
      * Duty (first IN→OUT session per day):
-     *   < 4 hrs  → Absent
-     *   4–7 hrs  → Half Day
-     *   ≥ 7 hrs  → Full Day
+     *   < 4 hrs  → Absent    (0)
+     *   4–7 hrs  → Half Day  (0.5)
+     *   ≥ 7 hrs  → Full Day  (1.0)
      *
      * OT (second IN→OUT session per day):
-     *   < 4 hrs  → No OT
-     *   4–7 hrs  → Half OT  (counted as 4 hrs)
-     *   ≥ 7 hrs  → Full OT  (actual hours)
+     *   < 4 hrs  → No OT      (0 OT days)
+     *   4–7 hrs  → Half OT    (0.5 OT days)
+     *   ≥ 7 hrs  → Full OT    (1.0 OT days)
+     *
+     * OT Pay = otDays × (baseSalary / workingDays) × otMultiplier
+     *   — flat day rate, NOT hourly.
+     *   — max 1.0 OT day per session regardless of actual hours worked.
      *
      * Sunday Rule:
      *   Saturday present AND Monday present → Sunday = Full paid holiday (1.0)
      *   Saturday present + Monday absent    → Sunday = Half paid holiday (0.5)
-     *   Saturday absent  AND Monday absent  → Sunday = No pay            (0.0)
+     *   Saturday absent  (any Monday)       → Sunday = No pay            (0.0)
      */
     public function getAttendanceSummary(string $employeeId, int $year, int $month): array {
         $sessions = $this->getCollection('sessions');
-        $fullDays  = $halfDays = $absentDays = $otHours = 0.0;
-        $presentMap = []; // date => true for days with actual presence
+        $fullDays = $halfDays = $absentDays = $otDays = 0.0;
+        $presentMap = [];
 
         foreach ($sessions as $s) {
             if (($s['employee_id'] ?? '') !== $employeeId) continue;
@@ -262,29 +266,33 @@ class HypeFirebaseAPI {
             if ($dutyHrs < DUTY_HALF_MIN_HOURS) {
                 $absentDays += 1;
             } elseif ($dutyHrs < DUTY_FULL_MIN_HOURS) {
-                $halfDays   += 1;
-                $presentMap[$date] = true;
+                $halfDays           += 1;
+                $presentMap[$date]   = true;
             } else {
-                $fullDays   += 1;
-                $presentMap[$date] = true;
+                $fullDays            += 1;
+                $presentMap[$date]   = true;
             }
 
-            // ── OT session ────────────────────────────────────────────────────
+            // ── OT session (flat day-rate: 0 / 0.5 / 1.0) ────────────────────
+            // < 4 hrs  → No OT
+            // 4–7 hrs  → Half OT day (0.5)
+            // ≥ 7 hrs  → Full OT day (1.0)
+            // Max = 1 OT day regardless of actual hours (e.g. 12 hrs OT = 1 day)
             $otHrs = (float)($s['ot_hours'] ?? 0);
-            if ($otHrs >= OT_FULL_MIN_HOURS) {
-                $otHours += $otHrs;           // Full OT = actual hours
+            if ($otHrs >= DUTY_FULL_MIN_HOURS) {
+                $otDays += 1.0;
             } elseif ($otHrs >= OT_HALF_MIN_HOURS) {
-                $otHours += OT_HALF_MIN_HOURS; // Half OT = 4 hrs
-                // (< 4 = No OT, nothing added)
+                $otDays += 0.5;
             }
+            // < 4 hrs → no OT day added
         }
 
         // ── Sunday Rule ───────────────────────────────────────────────────────
-        $paidHolidays  = 0.0;
-        $daysInMonth   = cal_days_in_month(CAL_GREGORIAN, $month, $year);
+        $paidHolidays = 0.0;
+        $daysInMonth  = cal_days_in_month(CAL_GREGORIAN, $month, $year);
         for ($day = 1; $day <= $daysInMonth; $day++) {
             $date = sprintf('%04d-%02d-%02d', $year, $month, $day);
-            if ((int)date('w', strtotime($date)) !== 0) continue; // Skip non-Sunday
+            if ((int)date('w', strtotime($date)) !== 0) continue;
 
             $sat = date('Y-m-d', strtotime($date . ' -1 day'));
             $mon = date('Y-m-d', strtotime($date . ' +1 day'));
@@ -292,11 +300,10 @@ class HypeFirebaseAPI {
             $monPresent = isset($presentMap[$mon]);
 
             if ($satPresent && $monPresent) {
-                $paidHolidays += 1.0; // Full Sunday pay
+                $paidHolidays += 1.0;
             } elseif ($satPresent && !$monPresent) {
-                $paidHolidays += 0.5; // Half Sunday pay
+                $paidHolidays += 0.5;
             }
-            // else: no pay — nothing added
         }
 
         return [
@@ -304,7 +311,7 @@ class HypeFirebaseAPI {
             'half_days'     => $halfDays,
             'absent_days'   => $absentDays,
             'paid_holidays' => $paidHolidays,
-            'ot_hours'      => $otHours,
+            'ot_days'       => $otDays,   // flat OT day units (0 / 0.5 / 1.0 per session)
         ];
     }
 
