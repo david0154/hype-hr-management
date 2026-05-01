@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hype HR</string>
+    <string name="login">Login</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="enter_pin">Enter PIN</string>
+    <string name="mark_attendance">Mark Attendance</string>
+    <string name="salary_slips">Salary Slips</string>
+    <string name="attendance_history">Attendance History</string>
+    <string name="security_mode">Security / Supervisor Mode</string>
+    <string name="scan_qr">Scan QR Code</string>
+    <string name="check_in">Check IN</string>
+    <string name="check_out">Check OUT</string>
+    <string name="logout">Logout</string>
+    <string name="developed_by">Developed by David | Nexuzy Lab | nexuzylab@gmail.com</string>
+</resources>
