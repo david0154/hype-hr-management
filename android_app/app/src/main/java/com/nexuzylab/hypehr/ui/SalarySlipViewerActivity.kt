@@ -3,52 +3,65 @@ package com.nexuzylab.hypehr.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.View
+import android.print.PrintAttributes
+import android.print.PrintManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.nexuzylab.hypehr.databinding.ActivitySalaryViewerBinding
+import com.nexuzylab.hypehr.databinding.ActivitySalarySlipViewerBinding
 
 /**
- * Hype HR Management — Salary Slip PDF Viewer
- * Opens the Firebase Storage PDF URL in the device's browser / PDF viewer.
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * SalarySlipViewerActivity — Opens the PDF salary slip URL in a WebView.
+ *
+ * Features:
+ *   • View salary slip PDF in-app
+ *   • Download / Open externally
+ *   • Print option
+ *
+ * Developed by David | Nexuzy Lab
  */
 class SalarySlipViewerActivity : AppCompatActivity() {
 
-    companion object {
-        const val EXTRA_PDF_URL   = "pdf_url"
-        const val EXTRA_MONTH_LABEL = "month_label"
-    }
-
-    private lateinit var binding: ActivitySalaryViewerBinding
+    private lateinit var binding: ActivitySalarySlipViewerBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivitySalaryViewerBinding.inflate(layoutInflater)
+        binding = ActivitySalarySlipViewerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        val url   = intent.getStringExtra(EXTRA_PDF_URL) ?: ""
-        val label = intent.getStringExtra(EXTRA_MONTH_LABEL) ?: "Salary Slip"
+        val slipUrl   = intent.getStringExtra("slip_url")
+        val monthLabel = intent.getStringExtra("month_label") ?: "Salary Slip"
+        supportActionBar?.title = monthLabel
 
-        supportActionBar?.title = label
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
-
-        if (url.isEmpty()) {
-            binding.tvMsg.text = "Salary slip PDF not available."
-            binding.btnOpen.visibility = View.GONE
+        if (slipUrl.isNullOrBlank()) {
+            Toast.makeText(this, "No slip URL provided", Toast.LENGTH_SHORT).show()
+            finish()
             return
         }
 
-        binding.tvMsg.text = "Tap below to open or download your salary slip PDF."
+        // Use Google Docs viewer to render PDF in WebView (no local PDF support needed)
+        val viewerUrl = "https://docs.google.com/gview?embedded=true&url=${Uri.encode(slipUrl)}"
+
+        binding.webView.apply {
+            settings.javaScriptEnabled = true
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
+            webViewClient = WebViewClient()
+            loadUrl(viewerUrl)
+        }
+
         binding.btnOpen.setOnClickListener {
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-            } catch (e: Exception) {
-                Toast.makeText(this, "No PDF viewer found. Opening in browser.", Toast.LENGTH_SHORT).show()
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-            }
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(slipUrl)))
+        }
+
+        binding.btnPrint.setOnClickListener {
+            val printManager = getSystemService(PRINT_SERVICE) as PrintManager
+            val job = printManager.print(
+                "Salary Slip",
+                binding.webView.createPrintDocumentAdapter("salary_slip"),
+                PrintAttributes.Builder().build()
+            )
         }
     }
-
-    override fun onSupportNavigateUp(): Boolean { finish(); return true }
 }
