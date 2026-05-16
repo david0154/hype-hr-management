@@ -11,14 +11,15 @@ Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
 import tkinter as tk
 from tkinter import messagebox
-import hashlib
+import hashlib, os
 from utils.firebase_config import get_db
 from modules.roles import get_role_display, has_permission
 
-# ── Default super admin (seeded to Firestore on first run) ───────────────────
 SUPER_ADMIN_USERNAME = "admin.hype"
-SUPER_ADMIN_PASSWORD = "Hype@2024#SuperAdmin"  # Change after first login!
+SUPER_ADMIN_PASSWORD = "Hype@2024#SuperAdmin"
 SUPER_ADMIN_ROLE     = "super_admin"
+
+LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logo.png")
 
 
 def _hash(password: str) -> str:
@@ -26,24 +27,22 @@ def _hash(password: str) -> str:
 
 
 def seed_super_admin():
-    """Create default super-admin in Firestore if no admin users exist."""
-    db = get_db()
+    db   = get_db()
     docs = list(db.collection("admin_users").limit(1).stream())
     if not docs:
         db.collection("admin_users").document(SUPER_ADMIN_USERNAME).set({
-            "username":     SUPER_ADMIN_USERNAME,
-            "display_name": "Super Administrator",
-            "role":         SUPER_ADMIN_ROLE,
-            "password_hash": _hash(SUPER_ADMIN_PASSWORD),
+            "username":             SUPER_ADMIN_USERNAME,
+            "display_name":         "Super Administrator",
+            "role":                 SUPER_ADMIN_ROLE,
+            "password_hash":        _hash(SUPER_ADMIN_PASSWORD),
             "must_change_password": True,
-            "active": True,
+            "active":               True,
         })
         print("[AUTH] Super admin seeded:", SUPER_ADMIN_USERNAME)
 
 
 def authenticate(username: str, password: str) -> dict | None:
-    """Return user dict on success, None on failure."""
-    db = get_db()
+    db  = get_db()
     doc = db.collection("admin_users").document(username.strip().lower()).get()
     if not doc.exists: return None
     user = doc.to_dict()
@@ -57,21 +56,55 @@ class LoginWindow:
         self.on_success = on_success_callback
         self.root = tk.Tk()
         self.root.title("Hype HR — Admin Login")
-        self.root.geometry("420x380")
+        self.root.geometry("440x440")
         self.root.configure(bg="#0d1b2a")
         self.root.resizable(False, False)
-        seed_super_admin()   # ensure at least one admin exists
+        self._set_icon()
+        seed_super_admin()
         self._build_ui()
         self.root.mainloop()
 
-    def _build_ui(self):
-        tk.Label(self.root, text="HYPE HR MANAGEMENT",
-                 font=("Arial", 16, "bold"), bg="#0d1b2a", fg="#f0c040").pack(pady=(30, 5))
-        tk.Label(self.root, text="Admin Login",
-                 font=("Arial", 11), bg="#0d1b2a", fg="#aaa").pack()
+    def _set_icon(self):
+        """Set logo.png as window favicon / taskbar icon."""
+        if not os.path.exists(LOGO_PATH):
+            return
+        try:
+            from PIL import Image, ImageTk
+            icon_img   = Image.open(LOGO_PATH).resize((64, 64), Image.LANCZOS)
+            icon_photo = ImageTk.PhotoImage(icon_img)
+            self.root.iconphoto(True, icon_photo)
+            self.root._icon_ref = icon_photo    # prevent GC
+        except Exception:
+            try:
+                self.root.iconbitmap(LOGO_PATH)
+            except Exception:
+                pass
 
-        frame = tk.Frame(self.root, bg="#1a2740", padx=30, pady=25)
-        frame.pack(padx=30, pady=20, fill="x")
+    def _build_ui(self):
+        # ── Logo image centred above title ──────────────────────────────
+        if os.path.exists(LOGO_PATH):
+            try:
+                from PIL import Image, ImageTk
+                logo_img   = Image.open(LOGO_PATH).resize((72, 72), Image.LANCZOS)
+                logo_photo = ImageTk.PhotoImage(logo_img)
+                logo_lbl   = tk.Label(self.root, image=logo_photo,
+                                      bg="#0d1b2a", bd=0)
+                logo_lbl.image = logo_photo
+                logo_lbl.pack(pady=(22, 0))
+            except Exception:
+                tk.Label(self.root, text="🏯", font=("Arial", 36),
+                         bg="#0d1b2a", fg="#f0c040").pack(pady=(22, 0))
+        else:
+            tk.Label(self.root, text="🏯", font=("Arial", 36),
+                     bg="#0d1b2a", fg="#f0c040").pack(pady=(22, 0))
+
+        tk.Label(self.root, text="HYPE HR MANAGEMENT",
+                 font=("Arial", 16, "bold"), bg="#0d1b2a", fg="#f0c040").pack(pady=(6, 2))
+        tk.Label(self.root, text="Admin Login",
+                 font=("Arial", 10), bg="#0d1b2a", fg="#aaa").pack()
+
+        frame = tk.Frame(self.root, bg="#1a2740", padx=30, pady=22)
+        frame.pack(padx=30, pady=14, fill="x")
 
         tk.Label(frame, text="Username", bg="#1a2740", fg="#ccc",
                  font=("Arial", 10)).grid(row=0, column=0, sticky="w", pady=6)
@@ -91,16 +124,15 @@ class LoginWindow:
         tk.Button(frame, text="Login", bg="#f77f00", fg="white",
                   font=("Arial", 11, "bold"), relief="flat", padx=20, pady=6,
                   cursor="hand2", command=self._login).grid(
-                  row=2, column=0, columnspan=2, pady=(15, 0))
+                  row=2, column=0, columnspan=2, pady=(14, 0))
 
         self.status_lbl = tk.Label(self.root, text="",
                                     bg="#0d1b2a", fg="#e74c3c", font=("Arial", 9))
         self.status_lbl.pack()
 
-        # Default credentials reminder
         tk.Label(self.root,
                  text="Default: admin.hype / Hype@2024#SuperAdmin",
-                 bg="#0d1b2a", fg="#555", font=("Arial", 8)).pack(pady=(5, 0))
+                 bg="#0d1b2a", fg="#444", font=("Arial", 8)).pack(pady=(4, 0))
 
     def _login(self):
         username = self.user_entry.get().strip()
@@ -110,7 +142,6 @@ class LoginWindow:
             return
         user = authenticate(username, password)
         if user:
-            role_name = get_role_display(user.get("role", ""))
             if user.get("must_change_password"):
                 messagebox.showwarning("Security",
                     "You are using the default password.\n"
@@ -123,13 +154,22 @@ class LoginWindow:
 
 
 class ChangePasswordDialog:
-    """Accessible from Settings > My Account for any logged-in user."""
     def __init__(self, parent, current_user):
         self.current_user = current_user
         win = tk.Toplevel(parent)
         win.title("Change Password")
         win.geometry("380x280")
         win.configure(bg="#0d1b2a")
+
+        # set icon on dialog too
+        if os.path.exists(LOGO_PATH):
+            try:
+                from PIL import Image, ImageTk
+                ip = ImageTk.PhotoImage(Image.open(LOGO_PATH).resize((32, 32), Image.LANCZOS))
+                win.iconphoto(False, ip)
+                win._icon_ref = ip
+            except Exception:
+                pass
 
         tk.Label(win, text="Change Your Password",
                  font=("Arial", 12, "bold"), bg="#0d1b2a", fg="#f0c040").pack(pady=15)
@@ -171,8 +211,8 @@ class ChangePasswordDialog:
         try:
             db = get_db()
             db.collection("admin_users").document(self.current_user["username"]).update({
-                "password_hash": _hash(new),
-                "must_change_password": False
+                "password_hash":        _hash(new),
+                "must_change_password": False,
             })
             messagebox.showinfo("Success", "Password updated successfully!", parent=win)
             win.destroy()

@@ -10,23 +10,58 @@ from tkinter import ttk, messagebox
 from modules.auth import LoginWindow
 from modules.roles import has_permission, get_role_display
 from utils.local_cache import start_background_sync
+import os
+
+
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
+
+
+def _set_icon(window):
+    """Set logo.png as favicon/taskbar icon for any Tk window."""
+    if not os.path.exists(LOGO_PATH):
+        return
+    try:
+        from PIL import Image, ImageTk
+        icon_img = Image.open(LOGO_PATH).resize((64, 64), Image.LANCZOS)
+        icon_photo = ImageTk.PhotoImage(icon_img)
+        window.iconphoto(True, icon_photo)
+        window._icon_photo_ref = icon_photo   # prevent GC
+    except Exception:
+        try:                                   # fallback: .ico if PIL unavailable
+            window.iconbitmap(LOGO_PATH)
+        except Exception:
+            pass
 
 
 def launch_main_app(current_user):
-    # Start background Firebase → SQLite sync (runs every 2 min, daemon thread)
     start_background_sync()
 
     root = tk.Tk()
     root.title(f"Hype HR — {get_role_display(current_user['role'])} Panel")
     root.geometry("1100x680")
     root.configure(bg="#0d1b2a")
+    _set_icon(root)
 
     # ── Header ───────────────────────────────────────────────────────────────
-    header = tk.Frame(root, bg="#1a2740", height=48)
+    header = tk.Frame(root, bg="#1a2740", height=56)
     header.pack(fill="x")
     header.pack_propagate(False)
+
+    # Logo image in header
+    if os.path.exists(LOGO_PATH):
+        try:
+            from PIL import Image, ImageTk
+            logo_img   = Image.open(LOGO_PATH).resize((36, 36), Image.LANCZOS)
+            logo_photo = ImageTk.PhotoImage(logo_img)
+            logo_lbl   = tk.Label(header, image=logo_photo,
+                                  bg="#1a2740", bd=0)
+            logo_lbl.image = logo_photo   # keep reference
+            logo_lbl.pack(side="left", padx=(10, 4), pady=10)
+        except Exception:
+            pass
+
     tk.Label(header, text="HYPE HR MANAGEMENT",
-             font=("Arial", 15, "bold"), bg="#1a2740", fg="#f0c040").pack(side="left", padx=16)
+             font=("Arial", 15, "bold"), bg="#1a2740", fg="#f0c040").pack(side="left", padx=(2, 16))
     tk.Label(header,
              text=f"Logged in as: {current_user.get('display_name', current_user['username'])}  "
                   f"[{get_role_display(current_user['role'])}]",
@@ -37,7 +72,7 @@ def launch_main_app(current_user):
     sync_lbl.pack(side="right", padx=8)
     root.after(4000, lambda: sync_lbl.config(text="☁ Synced", fg="#27ae60"))
 
-    # ── Notebook (tabs visible based on role) ────────────────────────────────
+    # ── Notebook ───────────────────────────────────────────────────────────────
     style = ttk.Style()
     style.theme_use("clam")
     style.configure("TNotebook",     background="#0d1b2a", borderwidth=0)
@@ -52,15 +87,13 @@ def launch_main_app(current_user):
     role = current_user.get("role", "manager")
 
     def add_tab(label, perm, builder_fn):
-        """Add a tab only if role has permission. Errors are caught so they
-        never prevent the remaining tabs from loading."""
         if not has_permission(role, perm):
             return
         frame = tk.Frame(nb, bg="#0d1b2a")
         nb.add(frame, text=label)
         try:
             builder_fn(frame, current_user)
-        except Exception as exc:          # keep app alive even if one tab crashes
+        except Exception as exc:
             import traceback
             traceback.print_exc()
             tk.Label(frame,
@@ -68,14 +101,12 @@ def launch_main_app(current_user):
                      bg="#0d1b2a", fg="#ff6666", font=("Arial", 10),
                      justify="left", wraplength=700).pack(padx=30, pady=40)
 
-    # ── Tab builder functions ────────────────────────────────────────────────
     def load_dashboard(f, u):
         from modules.dashboard import DashboardModule
         DashboardModule(f, u)
 
     def load_employees(f, u):
         from modules.employees import EmployeePanel
-        # EmployeePanel is a tk.Frame — must pack itself into f
         panel = EmployeePanel(f, role=u.get("role", "admin"))
         panel.pack(fill="both", expand=True)
 
@@ -85,7 +116,6 @@ def launch_main_app(current_user):
 
     def load_salary(f, u):
         from modules.salary import SalaryPanel
-        # SalaryPanel is a tk.Frame — must pack itself into f
         panel = SalaryPanel(f, role=u.get("role", "admin"))
         panel.pack(fill="both", expand=True)
 
@@ -99,11 +129,8 @@ def launch_main_app(current_user):
 
     def load_settings(f, u):
         from modules.settings import SettingsModule
-        # SettingsModule is a tk.Frame that calls self.pack() internally—
-        # pass f directly as parent so it fills the notebook tab correctly.
         SettingsModule(f, u)
 
-    # ── Register tabs ────────────────────────────────────────────────────────
     add_tab("🏠 Dashboard",  "dashboard",    load_dashboard)
     add_tab("👥 Employees",  "employees",    load_employees)
     add_tab("📅 Attendance", "attendance",   load_attendance)
