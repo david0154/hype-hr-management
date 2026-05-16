@@ -1,16 +1,13 @@
 """
 Role-Based Access Control — Hype HR Management
 
-ROLES & PERMISSIONS:
-  super_admin : All permissions (created at first launch)
-  admin       : All permissions except creating super_admin accounts
-  hr          : Employees view/add/edit, attendance view+mark, salary view, bonus pay
-  ca          : Salary generate, bonus pay, salary raise, reports
-  manager     : Attendance view+mark, employee view only
-
-SUPER ADMIN DEFAULT CREDENTIALS (change after first login):
-  Username : admin.hype
-  Password : Hype@2024#SuperAdmin
+ROLES:
+  super_admin : Full access
+  admin       : Full except creating super_admin
+  hr          : Employees, attendance, salary view, bonus
+  ca          : Salary, bonus, raise, reports
+  manager     : Attendance, employee view
+  security    : Security scanner only (mark IN/OUT for employees without phones)
 
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -19,23 +16,29 @@ PERMISSIONS = {
     "super_admin": [
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
-        "id_card", "manage_users", "reports", "mark_attendance"
+        "id_card", "manage_users", "reports", "mark_attendance",
+        "security"
     ],
     "admin": [
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
-        "id_card", "reports", "mark_attendance"
+        "id_card", "reports", "mark_attendance", "security"
     ],
     "hr": [
         "dashboard", "employees", "attendance",
-        "salary", "bonus", "id_card", "reports", "mark_attendance"
+        "salary", "bonus", "id_card", "reports",
+        "mark_attendance", "security"
     ],
     "ca": [
         "dashboard", "salary", "bonus", "salary_raise",
         "attendance", "reports"
     ],
     "manager": [
-        "dashboard", "attendance", "employees", "mark_attendance"
+        "dashboard", "attendance", "employees",
+        "mark_attendance", "security"
+    ],
+    "security": [
+        "security"
     ],
 }
 
@@ -45,11 +48,11 @@ ROLE_DISPLAY = {
     "hr":          "HR Manager",
     "ca":          "CA / Accountant",
     "manager":     "Manager",
+    "security":    "Security Guard",
 }
 
 
 def has_permission(role: str, permission: str) -> bool:
-    """Return True if role has the given permission."""
     return permission in PERMISSIONS.get(role, [])
 
 
