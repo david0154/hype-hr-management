@@ -24,7 +24,7 @@ import java.util.Locale
 class SalarySlipActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySalarySlipBinding
-    private val db  = FirebaseFirestore.getInstance()
+    private val db = FirebaseFirestore.getInstance()
     private val fmt = NumberFormat.getNumberInstance(Locale("en", "IN"))
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,7 +39,7 @@ class SalarySlipActivity : AppCompatActivity() {
 
         // Month/Year from intent or default to previous month
         val cal = Calendar.getInstance()
-        cal.add(Calendar.MONTH, -1)
+        cal.add(Calendar.MONTH, -1)  // previous month
         val month = intent.getIntExtra("month", cal.get(Calendar.MONTH) + 1)
         val year  = intent.getIntExtra("year",  cal.get(Calendar.YEAR))
 
@@ -55,6 +55,7 @@ class SalarySlipActivity : AppCompatActivity() {
         binding.progressBar.isVisible = true
         binding.slipCard.isVisible    = false
 
+        // Load employee info
         db.collection("employees").document(empId).get()
             .addOnSuccessListener { empDoc ->
                 if (!empDoc.exists()) { showError("Employee not found"); return@addOnSuccessListener }
@@ -67,13 +68,10 @@ class SalarySlipActivity : AppCompatActivity() {
                 val advance     = (emp["advance"] as? Number)?.toDouble() ?: 0.0
                 val payMode     = emp["payment_mode"] as? String ?: "CASH"
 
-                val monthStr  = String.format("%04d-%02d", year, month)
+                val monthStr = String.format("%04d-%02d", year, month)
                 val monthName = java.text.DateFormatSymbols().months[month - 1]
 
-                // ✅ FIX: compute actual working days (exclude Sundays) instead of hardcoded 26
-                val workingDays = getWorkingDays(year, month)
-                val dayRate     = if (workingDays > 0) baseSalary / workingDays else 0.0
-
+                // Load attendance sessions for the month
                 db.collection("sessions")
                     .whereGreaterThanOrEqualTo("date", "$monthStr-01")
                     .whereLessThanOrEqualTo("date", "$monthStr-31")
@@ -82,32 +80,27 @@ class SalarySlipActivity : AppCompatActivity() {
                     .addOnSuccessListener { sessions ->
                         var present = 0; var half = 0; var absent = 0; var otDays = 0
                         var earnedPay = 0.0; var otPay = 0.0
+                        val workingDays = 26
+                        val dayRate = baseSalary / workingDays
 
                         sessions.documents.forEach { doc ->
                             val duty = doc.getString("duty_status") ?: "absent"
-                            val ot   = doc.getString("ot_status")   ?: "none"
+                            val ot   = doc.getString("ot_status") ?: "none"
                             val hrs  = (doc.get("duty_hours") as? Number)?.toDouble() ?: 0.0
-
                             when (duty) {
-                                "full" -> { present++;  earnedPay += dayRate }
-                                "half" -> { half++;     earnedPay += dayRate / 2.0 }
+                                "full" -> { present++; earnedPay += dayRate }
+                                "half" -> { half++;    earnedPay += dayRate / 2 }
                                 else   -> { absent++ }
                             }
-
-                            // ✅ FIX: OT = (dayRate / 8h) * otHrs * 1.5 — consistent with admin side
-                            if (ot == "full" || ot == "half") {
-                                val otHrs = when {
-                                    hrs > 0      -> hrs
-                                    ot == "full" -> 7.0
-                                    else         -> 4.0
-                                }
-                                otPay += (dayRate / 8.0) * otHrs * 1.5
+                            if (ot in listOf("full", "half")) {
+                                val otHrs = if (hrs > 0) hrs else if (ot == "full") 7.0 else 4.0
+                                otPay += (otHrs * dayRate / 8) * 1.5
                                 otDays++
                             }
                         }
 
-                        val gross = earnedPay + otPay
-                        val net   = maxOf(0.0, gross - advance)
+                        val gross  = earnedPay + otPay
+                        val net    = maxOf(0.0, gross - advance)
 
                         binding.progressBar.isVisible = false
                         binding.slipCard.isVisible    = true
@@ -120,10 +113,10 @@ class SalarySlipActivity : AppCompatActivity() {
                         binding.tvDesig.text      = "$designation  |  $department"
 
                         // Attendance
-                        binding.tvPresent.text  = "$present days"
-                        binding.tvHalf.text     = "$half days"
-                        binding.tvAbsent.text   = "$absent days"
-                        binding.tvOtDays.text   = "$otDays days"
+                        binding.tvPresent.text    = "$present days"
+                        binding.tvHalf.text       = "$half days"
+                        binding.tvAbsent.text      = "$absent days"
+                        binding.tvOtDays.text     = "$otDays days"
 
                         // Earnings
                         binding.tvBaseSalary.text = "₹ ${fmt.format(baseSalary)}"
@@ -132,9 +125,9 @@ class SalarySlipActivity : AppCompatActivity() {
                         binding.tvGross.text      = "₹ ${fmt.format(gross)}"
 
                         // Deductions
-                        binding.tvAdvance.text  = "₹ ${fmt.format(advance)}"
-                        binding.tvNetPay.text   = "₹ ${fmt.format(net)}"
-                        binding.tvPayMode.text  = payMode
+                        binding.tvAdvance.text    = "₹ ${fmt.format(advance)}"
+                        binding.tvNetPay.text     = "₹ ${fmt.format(net)}"
+                        binding.tvPayMode.text    = payMode
 
                         // Footer
                         binding.tvGeneratedOn.text = "Generated: ${java.util.Date()}"
@@ -142,23 +135,6 @@ class SalarySlipActivity : AppCompatActivity() {
                     .addOnFailureListener { showError(it.message ?: "Failed to load sessions") }
             }
             .addOnFailureListener { showError(it.message ?: "Failed") }
-    }
-
-    /**
-     * Working days = all days in month MINUS Sundays.
-     * FIX: replaces the old hardcoded 26 which caused mismatch for months
-     * with 28/29/30/31 days or different Sunday counts.
-     */
-    private fun getWorkingDays(year: Int, month: Int): Int {
-        val cal = Calendar.getInstance()
-        cal.set(year, month - 1, 1)
-        val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-        var working = 0
-        for (day in 1..maxDay) {
-            cal.set(year, month - 1, day)
-            if (cal.get(Calendar.DAY_OF_WEEK) != Calendar.SUNDAY) working++
-        }
-        return working
     }
 
     private fun showError(msg: String) {
