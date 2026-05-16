@@ -36,7 +36,8 @@ class MonthlySalaryWorker(ctx: Context, params: WorkerParameters) :
         return try {
             val cal = Calendar.getInstance().apply { add(Calendar.MONTH, -1) }
             val month    = SimpleDateFormat("MMMM", Locale.getDefault()).format(cal.time)
-            val year     = SimpleDateFormat("yyyy", Locale.getDefault()).format(cal.time)
+            val year     = cal.get(Calendar.YEAR)
+            val monthNum = cal.get(Calendar.MONTH) + 1
             val monthKey = SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(cal.time)
 
             val employees = db.collection("employees")
@@ -46,7 +47,8 @@ class MonthlySalaryWorker(ctx: Context, params: WorkerParameters) :
             for (emp in employees.documents) {
                 val data   = emp.data ?: continue
                 val empId  = data["employee_id"] as? String ?: emp.id
-                val salary = (data["salary"] as? Number)?.toDouble() ?: 0.0
+                // FIX: use toFloat() — SalaryCalculator.calculate() expects Float not Double
+                val salary = (data["salary"] as? Number)?.toFloat() ?: 0f
 
                 // Skip if already generated
                 val existing = db.collection("salary")
@@ -67,13 +69,16 @@ class MonthlySalaryWorker(ctx: Context, params: WorkerParameters) :
                     .get().await()
                     .documents.firstOrNull()?.data
 
+                // FIX: removed wrong named params 'monthKey' and 'deduction';
+                // SalaryCalculator.calculate() takes year, month (Int) not monthKey (String)
+                // deduction is excluded per HR policy — not passed
                 val result = SalaryCalculator.calculate(
-                    baseSalary = salary,
-                    sessions   = sessions,
-                    monthKey   = monthKey,
-                    bonus      = (extras?.get("bonus")     as? Number)?.toDouble() ?: 0.0,
-                    deduction  = (extras?.get("deduction") as? Number)?.toDouble() ?: 0.0,
-                    advance    = (extras?.get("advance")   as? Number)?.toDouble() ?: 0.0,
+                    baseSalary   = salary,
+                    sessions     = sessions,
+                    year         = year,
+                    month        = monthNum,
+                    advance      = (extras?.get("advance") as? Number)?.toFloat() ?: 0f,
+                    bonusAmount  = (extras?.get("bonus")   as? Number)?.toFloat() ?: 0f,
                 )
 
                 val companySnap = db.collection("settings").document("company").get().await()
@@ -93,24 +98,22 @@ class MonthlySalaryWorker(ctx: Context, params: WorkerParameters) :
                         "attendance_salary" to result.attendanceSalary,
                         "ot_pay"          to result.otPay,
                         "bonus"           to result.bonus,
-                        "deduction"       to result.deduction,
                         "advance"         to result.advance,
                         "final_salary"    to result.finalSalary,
                         "total_present"   to result.totalPresent,
                         "half_days"       to result.halfDays,
                         "absent_days"     to result.absentDays,
                         "paid_holidays"   to result.paidHolidays,
-                        "ot_hours"        to result.otHours,
+                        "ot_hours"        to result.otDays,
                         "payment_mode"    to (data["payment_mode"] ?: "CASH"),
-                        "slip_url"        to "",   // PHP cron fills this
-                        "pdf_pending"     to true,  // Signal PHP cron to generate PDF
+                        "slip_url"        to "",
+                        "pdf_pending"     to true,
                         "created_at"      to com.google.firebase.Timestamp.now(),
                     )
                 ).await()
                 Log.d(TAG, "Salary computed for $empId — $month $year")
             }
 
-            // Re-schedule for next month
             reschedule()
             Result.success()
         } catch (e: Exception) {

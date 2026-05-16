@@ -10,7 +10,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // FIX: required for QRGenerator (com.github.androidmads:QRGenerator)
+        maven { url 'https://jitpack.io' }
     }
 }
+
 rootProject.name = "HypeHR"
 include ':app'

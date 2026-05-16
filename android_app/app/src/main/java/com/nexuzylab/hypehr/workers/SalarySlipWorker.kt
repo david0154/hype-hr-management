@@ -7,6 +7,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nexuzylab.hypehr.utils.SalaryCalculator
 import com.nexuzylab.hypehr.util.PdfUploader
+import kotlinx.coroutines.tasks.await
 import java.util.*
 import java.util.concurrent.TimeUnit
 
@@ -84,11 +85,9 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
 
         val sessions = fetchSessions(empId, monthKey)
 
-        // Advance only from adjustments (bonus=yearly from emp record, deduction=excluded)
         val adjustSnap = db.collection("employees").document(empId)
             .collection("adjustments").document(monthKey).get().await()
         val advance = (adjustSnap.getDouble("advance") ?: 0.0).toFloat()
-        // bonus and deduction from adjustments intentionally ignored
 
         val settingsSnap = db.collection("settings").document("app").get().await()
         val otMultiplier  = (settingsSnap.getDouble("ot_rate_multiplier") ?: 1.5).toFloat()
@@ -96,8 +95,6 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         val paymentMode   = settingsSnap.getString("payment_mode") ?: "CASH"
 
         val baseSalary   = ((emp["salary"] as? Number)?.toFloat()) ?: 0f
-        // Yearly bonus fields from employee record
-        val bonusType    = emp["bonus_type"]   as? String ?: "none"
         val bonusMonth   = (emp["bonus_month"]  as? Number)?.toInt()    ?: 0
         val bonusAmount  = (emp["bonus_amount"] as? Number)?.toFloat()  ?: 0f
 
@@ -146,9 +143,9 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             "half_days"         to result.halfDays,
             "absent_days"       to result.absentDays,
             "paid_holidays"     to result.paidHolidays,
-            "ot_days"           to result.otDays,          // flat OT day units
-            "ot_full_days"      to result.otFullDays,      // for display
-            "ot_half_days"      to result.otHalfDays,      // for display
+            "ot_days"           to result.otDays,
+            "ot_full_days"      to result.otFullDays,
+            "ot_half_days"      to result.otHalfDays,
             "payment_mode"      to paymentMode,
             "slip_url"          to slipUrl,
             "generated_at"      to com.google.firebase.Timestamp.now()
@@ -161,7 +158,7 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         db.collection("salary").document("${empId}_${monthKey}")
             .set(salaryRecord).await()
 
-        Log.d(TAG, "Salary slip saved for $empId / $monthKey — final: ${result.finalSalary} | OT days: ${result.otDays} | Bonus: ${result.bonus}")
+        Log.d(TAG, "Salary slip saved for $empId / $monthKey — final: ${result.finalSalary}")
     }
 
     private suspend fun fetchSessions(empId: String, monthKey: String): List<Map<String, Any>> {
@@ -222,8 +219,4 @@ class SalarySlipWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             Log.d("SalarySlipWorker", "Scheduled: delay=${delay / 60000} mins")
         }
     }
-}
-
-suspend fun <T> com.google.android.gms.tasks.Task<T>.await(): T {
-    return kotlinx.coroutines.tasks.await(this)
 }
