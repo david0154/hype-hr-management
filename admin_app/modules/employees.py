@@ -3,7 +3,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from utils.db import read_all, write, update
+from utils.db import read_all, write
 from utils.firebase_config import get_db, get_bucket
 from datetime import date, datetime
 import hashlib, os, calendar
@@ -17,14 +17,23 @@ MONTHS = ["January","February","March","April","May","June",
 def _hash(p: str) -> str:
     return hashlib.sha256(p.encode()).hexdigest()
 
-
 def _default_password(mobile: str, name: str) -> str:
     first = name.strip().split()[0].title() if name.strip() else "Emp"
     last4 = mobile.strip()[-4:] if len(mobile.strip()) >= 4 else "0000"
     return f"{first}{last4}@123"
 
+def _bind_scroll(canvas):
+    """Bind mousewheel scroll to a canvas on Windows/Mac/Linux."""
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _on_linux_up(event):   canvas.yview_scroll(-1, "units")
+    def _on_linux_down(event): canvas.yview_scroll( 1, "units")
+    canvas.bind_all("<MouseWheel>",    _on_mousewheel)
+    canvas.bind_all("<Button-4>",      _on_linux_up)
+    canvas.bind_all("<Button-5>",      _on_linux_down)
 
-# ───────────────────────────────────────────────────────────────────
+
+# ───────────────────────────────────────────────────────────────────────
 class EmployeePanel(tk.Frame):
     def __init__(self, parent, role="admin"):
         super().__init__(parent, bg="#0d1b2a")
@@ -84,7 +93,9 @@ class EmployeePanel(tk.Frame):
                     and query.lower() not in e.get("employee_id","").lower():
                 continue
             self.employees[e["employee_id"]] = e
-            has_pass = "✅ Active" if e.get("app_password_hash") else "❌ Not Set"
+            # FIX: check app_password_hash properly
+            ph = e.get("app_password_hash", "").strip()
+            has_pass = "✅ Active" if ph else "❌ Not Set"
             self.tree.insert("", "end", iid=e["employee_id"], values=(
                 e["employee_id"],
                 e.get("name",""),
@@ -99,10 +110,7 @@ class EmployeePanel(tk.Frame):
             ))
 
     def _search(self): self._load(self.search_var.get().strip())
-
-    def _add_dialog(self):
-        EmployeeDialog(self, mode="add", on_save=self._load)
-
+    def _add_dialog(self): EmployeeDialog(self, mode="add", on_save=self._load)
     def _edit_selected(self, _=None):
         sel = self.tree.selection()
         if not sel: return
@@ -113,7 +121,15 @@ class EmployeePanel(tk.Frame):
         sel = self.tree.selection()
         if not sel: messagebox.showinfo("Select","Select an employee first."); return
         emp = self.employees.get(self.tree.item(sel[0])["values"][0])
-        if emp: CredentialsDialog(self, employee=emp, on_refresh=self._load)
+        if emp:
+            # Re-fetch fresh from Firestore so password_hash is current
+            try:
+                doc = self.db.collection("employees").document(emp["employee_id"]).get()
+                if doc.exists:
+                    emp = doc.to_dict()
+            except Exception:
+                pass
+            CredentialsDialog(self, employee=emp, on_refresh=self._load)
 
     def _show_duty_pay(self):
         sel = self.tree.selection()
@@ -122,19 +138,14 @@ class EmployeePanel(tk.Frame):
         if emp: DutyPayDialog(self, employee=emp, db=self.db)
 
 
-# ───────────────────── DUTY & PAYMENT DIALOG ──────────────────────
+# ───────────────────────────── DUTY & PAYMENT ──────────────────────────
 class DutyPayDialog(tk.Toplevel):
-    """
-    Shows monthly duty summary + calculated payment for any employee.
-    Columns: Date | Duty | OT | IN | OUT | Day Pay | OT Pay
-    Footer:  Total Present | Absent | Half Days | OT Days | Gross Pay | Advance | Net Pay
-    """
     def __init__(self, parent, employee: dict, db):
         super().__init__(parent)
         self.emp = employee
         self.db  = db
         self.title(f"📈 Duty & Payment — {employee.get('name','')}")
-        self.geometry("820x620")
+        self.geometry("860x640")
         self.resizable(True, True)
         self.configure(bg="#0d1b2a")
         self.grab_set()
@@ -143,25 +154,20 @@ class DutyPayDialog(tk.Toplevel):
 
     def _build(self):
         e = self.emp
-
-        # Header info
         info = tk.Frame(self, bg="#1a2740", padx=16, pady=10)
         info.pack(fill="x")
         tk.Label(info, text=f"👤  {e.get('name','')}  |  {e.get('employee_id','')}  |  "
                             f"{e.get('designation','')}  |  {e.get('department','')}",
-                 bg="#1a2740", fg="#f0c040",
-                 font=("Arial", 11, "bold")).pack(side="left")
-        tk.Label(info, text=f"Base Salary: Rs. {float(e.get('salary',0)):,.0f}  |  "
-                            f"Advance: Rs. {float(e.get('advance',0)):,.0f}  |  "
-                            f"Payment Mode: {e.get('payment_mode','CASH')}",
-                 bg="#1a2740", fg="#aaa",
-                 font=("Arial", 9)).pack(side="right")
+                 bg="#1a2740", fg="#f0c040", font=("Arial",11,"bold")).pack(side="left")
+        tk.Label(info, text=f"Base: Rs.{float(e.get('salary',0)):,.0f}  "
+                            f"Advance: Rs.{float(e.get('advance',0)):,.0f}  "
+                            f"Mode: {e.get('payment_mode','CASH')}",
+                 bg="#1a2740", fg="#aaa", font=("Arial",9)).pack(side="right")
 
-        # Month / Year selector
         ctrl = tk.Frame(self, bg="#0d1b2a", padx=10, pady=6)
         ctrl.pack(fill="x")
         tk.Label(ctrl, text="Month:", bg="#0d1b2a", fg="#ccc").pack(side="left")
-        self.month_var = tk.StringVar(value=MONTHS[date.today().month - 1])
+        self.month_var = tk.StringVar(value=MONTHS[date.today().month-1])
         ttk.Combobox(ctrl, textvariable=self.month_var, values=MONTHS,
                      width=12, state="readonly").pack(side="left", padx=4)
         tk.Label(ctrl, text="Year:", bg="#0d1b2a", fg="#ccc").pack(side="left", padx=(10,0))
@@ -173,19 +179,13 @@ class DutyPayDialog(tk.Toplevel):
                   relief="flat", padx=12, pady=4, cursor="hand2",
                   command=self._load).pack(side="left", padx=6)
 
-        # Duty table
         cols = ("date","day","duty","ot","in_t","out_t","hours","day_pay","ot_pay")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=16)
         for col, lbl, w in [
-            ("date",   "Date",     100),
-            ("day",    "Day",       70),
-            ("duty",   "Duty",      80),
-            ("ot",     "OT",        60),
-            ("in_t",   "IN",        80),
-            ("out_t",  "OUT",       80),
-            ("hours",  "Hours",     70),
-            ("day_pay","Day Pay",   90),
-            ("ot_pay", "OT Pay",    90),
+            ("date",   "Date",    100),("day",    "Day",      70),
+            ("duty",   "Duty",     80),("ot",     "OT",       60),
+            ("in_t",   "IN",       80),("out_t",  "OUT",      80),
+            ("hours",  "Hours",    70),("day_pay","Day Pay",  90),("ot_pay","OT Pay",90),
         ]:
             self.tree.heading(col, text=lbl)
             self.tree.column(col, width=w, anchor="center")
@@ -195,114 +195,85 @@ class DutyPayDialog(tk.Toplevel):
         self.tree.tag_configure("absent", foreground="#e74c3c")
         self.tree.tag_configure("sunday", foreground="#888", background="#0d1f30")
 
-        # Summary footer
         self.summary_frm = tk.Frame(self, bg="#1a2740", padx=14, pady=10)
-        self.summary_frm.pack(fill="x", padx=10, pady=(2, 8))
+        self.summary_frm.pack(fill="x", padx=10, pady=(2,8))
         self.summary_lbl = tk.Label(self.summary_frm, text="",
                                     bg="#1a2740", fg="#f0c040",
-                                    font=("Arial", 10, "bold"), justify="left")
+                                    font=("Arial",10,"bold"), justify="left")
         self.summary_lbl.pack(anchor="w")
 
     def _load(self):
         self.tree.delete(*self.tree.get_children())
         month_idx = MONTHS.index(self.month_var.get()) + 1
-        try:
-            year  = int(self.year_var.get().strip())
-        except ValueError:
-            return
-        emp_id    = self.emp["employee_id"]
-        salary    = float(self.emp.get("salary", 0))
-        advance   = float(self.emp.get("advance", 0))
-        working_d = 26   # default, TODO: read from settings
-        ot_mult   = 1.5
+        try: year = int(self.year_var.get().strip())
+        except ValueError: return
+        emp_id = self.emp["employee_id"]
+        salary = float(self.emp.get("salary", 0))
+        advance= float(self.emp.get("advance", 0))
+        working_d = 26
         day_rate  = salary / working_d
         half_rate = day_rate / 2
-
         month_str = f"{year}-{month_idx:02d}"
         _, days_in_month = calendar.monthrange(year, month_idx)
-
-        # Fetch sessions for month
         try:
             sessions = {}
+            # FIX: use filter= keyword to suppress Firestore warning
+            from google.cloud.firestore_v1.base_query import FieldFilter
             docs = self.db.collection("sessions") \
-                .where("employee_id", "==", emp_id) \
-                .where("date", ">=", f"{month_str}-01") \
-                .where("date", "<=", f"{month_str}-{days_in_month:02d}").stream()
+                .where(filter=FieldFilter("employee_id", "==", emp_id)) \
+                .where(filter=FieldFilter("date", ">=", f"{month_str}-01")) \
+                .where(filter=FieldFilter("date", "<=", f"{month_str}-{days_in_month:02d}")).stream()
             for doc in docs:
-                s = doc.to_dict()
-                sessions[s["date"]] = s
+                s = doc.to_dict(); sessions[s["date"]] = s
         except Exception as ex:
-            messagebox.showerror("Error", str(ex), parent=self)
-            return
+            messagebox.showerror("Error", str(ex), parent=self); return
 
-        total_present = 0.0
-        total_absent  = 0
-        total_half    = 0
-        total_ot_days = 0
-        gross_pay     = 0.0
-        total_ot_pay  = 0.0
+        total_present = 0.0; total_absent = 0; total_half = 0
+        total_ot_days = 0;   gross_pay = 0.0
 
-        for day in range(1, days_in_month + 1):
-            date_str  = f"{month_str}-{day:02d}"
-            weekday   = datetime(year, month_idx, day).strftime("%a")
-            is_sunday = weekday == "Sun"
-            sess      = sessions.get(date_str)
-
+        for day in range(1, days_in_month+1):
+            date_str = f"{month_str}-{day:02d}"
+            weekday  = datetime(year, month_idx, day).strftime("%a")
+            is_sunday= weekday == "Sun"
+            sess     = sessions.get(date_str)
             if sess:
-                duty   = sess.get("duty_status", "absent")
-                ot     = sess.get("ot_status",   "none")
-                in_t   = sess.get("in_time",  "—")
-                out_t  = sess.get("out_time", "—")
-                hours  = sess.get("duty_hours", "")
+                duty  = sess.get("duty_status","absent")
+                ot    = sess.get("ot_status","none")
+                in_t  = sess.get("in_time","—")
+                out_t = sess.get("out_time","—")
+                hours = sess.get("duty_hours","")
             else:
-                duty, ot, in_t, out_t, hours = "absent", "none", "—", "—", ""
-                if is_sunday:
-                    duty = "sunday"
+                duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","—","—",""
 
-            # Calculate day pay
-            if duty == "full":
-                dp = day_rate; total_present += 1
-            elif duty == "half":
-                dp = half_rate; total_half += 1; total_present += 0.5
-            elif duty == "sunday":
-                dp = 0; pass  # Sunday pay handled separately
-            else:
-                dp = 0; total_absent += 1
+            if duty=="full":   dp=day_rate;  total_present+=1
+            elif duty=="half": dp=half_rate; total_half+=1; total_present+=0.5
+            else:              dp=0;         total_absent+=(0 if is_sunday else 1)
 
-            # OT pay
-            op = 0
-            if ot in ("full", "half"):
-                ot_hours = float(hours) if hours else (7 if ot == "full" else 4)
-                op = (ot_hours * day_rate / 8) * ot_mult
-                total_ot_days += 1
-                total_ot_pay  += op
+            op=0
+            if ot in ("full","half"):
+                ot_hours = float(hours) if hours else (7 if ot=="full" else 4)
+                op = (ot_hours*day_rate/8)*1.5
+                total_ot_days+=1
+            gross_pay += dp+op
 
-            gross_pay += dp + op
-
-            self.tree.insert("", "end", values=(
+            self.tree.insert("","end",values=(
                 date_str, weekday,
                 duty.title(), ot.title(),
                 in_t, out_t,
-                f"{hours:.1f}h" if isinstance(hours, float) else (str(hours) or "—"),
+                f"{hours:.1f}h" if isinstance(hours,float) else (str(hours) or "—"),
                 f"Rs.{dp:,.0f}" if dp else "—",
                 f"Rs.{op:,.0f}" if op else "—",
             ), tags=("sunday" if is_sunday else duty,))
 
         net_pay = max(0, gross_pay - advance)
         self.summary_lbl.config(
-            text=f"  ✅ Present: {total_present}d   "
-                 f"🔴 Absent: {total_absent}d   "
-                 f"🟡 Half Days: {total_half}d   "
-                 f"⏰ OT Days: {total_ot_days}   "
-                 f"|──|   "
-                 f"💰 Gross: Rs.{gross_pay:,.0f}   "
-                 f"➖ Advance: Rs.{advance:,.0f}   "
-                 f"🟢 Net Pay: Rs.{net_pay:,.0f}  "
-                 f"| Mode: {self.emp.get('payment_mode','CASH')}"
-        )
+            text=f"  ✅ Present: {total_present}d   🔴 Absent: {total_absent}d   "
+                 f"🟡 Half Days: {total_half}d   ⏰ OT Days: {total_ot_days}   |"
+                 f"   💰 Gross: Rs.{gross_pay:,.0f}   ➖ Advance: Rs.{advance:,.0f}   "
+                 f"🟢 Net Pay: Rs.{net_pay:,.0f}  | Mode: {self.emp.get('payment_mode','CASH')}")
 
 
-# ────────────────────── CREDENTIALS DIALOG ──────────────────────
+# ───────────────────────────── CREDENTIALS ─────────────────────────────
 class CredentialsDialog(tk.Toplevel):
     def __init__(self, parent, employee: dict, on_refresh=None):
         super().__init__(parent)
@@ -310,20 +281,31 @@ class CredentialsDialog(tk.Toplevel):
         self.on_refresh = on_refresh
         self.db         = get_db()
         self.title(f"🔑 Android Credentials — {employee.get('name','')}")
-        self.geometry("440x420")
-        self.resizable(False, False)
+        self.geometry("460x480")
+        self.resizable(False, True)
         self.configure(bg="#0d1b2a")
         self.grab_set()
         self._build()
 
     def _build(self):
-        e   = self.employee
-        frm = tk.Frame(self, bg="#0d1b2a", padx=28, pady=20)
-        frm.pack(fill="both", expand=True)
+        # ── Scrollable canvas for the whole dialog ──────────────────
+        canvas = tk.Canvas(self, bg="#0d1b2a", highlightthickness=0)
+        vsb    = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        frm    = tk.Frame(canvas, bg="#0d1b2a", padx=28, pady=20)
+        win    = canvas.create_window((0, 0), window=frm, anchor="nw")
+        frm.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        _bind_scroll(canvas)
+
+        e = self.employee
         tk.Label(frm, text="📱 Android App Login Credentials",
-                 font=("Arial", 13, "bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
+                 font=("Arial",13,"bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
         tk.Label(frm, text=f"{e.get('name','')}  |  {e.get('employee_id','')}",
-                 bg="#0d1b2a", fg="#aaa", font=("Arial", 9)).pack(anchor="w", pady=(2,12))
+                 bg="#0d1b2a", fg="#aaa", font=("Arial",9)).pack(anchor="w", pady=(2,12))
+
         card = tk.Frame(frm, bg="#1a2740", padx=16, pady=14)
         card.pack(fill="x", pady=(0,14))
 
@@ -340,25 +322,39 @@ class CredentialsDialog(tk.Toplevel):
                       font=("Arial",8), padx=6).pack(side="right")
             return lbl
 
-        username   = e.get("username", "")
-        plain_pass = e.get("app_password_plain", "")
+        username = e.get("username", "")
+        # FIX: check hash properly — non-empty string = active
+        ph         = e.get("app_password_hash", "").strip()
+        plain_pass = e.get("app_password_plain", "").strip()
+        is_active  = bool(ph)   # True only if hash exists in Firestore
+
         if not plain_pass:
             plain_pass = _default_password(e.get("mobile",""), e.get("name",""))
+
         cred_row("Username:", username)
         self.pass_lbl = cred_row("Password:", plain_pass)
 
-        status_text  = "✅ Password active" if e.get("app_password_hash") else "⚠️ Not yet set"
-        status_color = "#27ae60"             if e.get("app_password_hash") else "#e67e22"
-        tk.Label(card, text=status_text, bg="#1a2740",
-                 fg=status_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
+        # Status — green if hash exists, orange if default shown
+        if is_active:
+            st_text, st_color = "✅  Password is active", "#27ae60"
+        else:
+            st_text, st_color = "⚠️  Not yet saved — click Set Password below", "#e67e22"
+
+        tk.Label(card, text=st_text, bg="#1a2740",
+                 fg=st_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
 
         info = tk.Frame(frm, bg="#132030", padx=12, pady=10)
-        info.pack(fill="x", pady=(0,12))
+        info.pack(fill="x", pady=(0,14))
         tk.Label(info,
-                 text=f"ℹ️ Employee opens app → enters username + password above",
-                 bg="#132030", fg="#ccc", font=("Arial",9)).pack(anchor="w")
+                 text="ℹ️  How employee logs into Android app:",
+                 bg="#132030", fg="#f0c040", font=("Arial",9,"bold")).pack(anchor="w")
+        tk.Label(info,
+                 text=f"  • Open Hype HR Employee App\n"
+                      f"  • Username: {username}\n"
+                      f"  • Password: {plain_pass}",
+                 bg="#132030", fg="#ccc", font=("Arial",9), justify="left").pack(anchor="w", pady=(4,0))
 
-        tk.Label(frm, text="― Reset Password ―",
+        tk.Label(frm, text="— Reset Password —",
                  bg="#0d1b2a", fg="#ccc", font=("Arial",9,"bold")).pack(anchor="w", pady=(0,6))
         nr = tk.Frame(frm, bg="#0d1b2a"); nr.pack(fill="x", pady=3)
         tk.Label(nr, text="New Password:", width=16, anchor="w",
@@ -367,6 +363,7 @@ class CredentialsDialog(tk.Toplevel):
         tk.Entry(nr, textvariable=self.new_pass_var, width=22,
                  bg="#1e3a5f", fg="white", insertbackground="white",
                  relief="flat", bd=4).pack(side="left", padx=6)
+
         br = tk.Frame(frm, bg="#0d1b2a"); br.pack(fill="x", pady=8)
         tk.Button(br, text="🔒 Set Password",  command=self._set_password,
                   bg="#c0392b", fg="white", relief="flat",
@@ -389,7 +386,7 @@ class CredentialsDialog(tk.Toplevel):
 
     def _reset_to_default(self):
         d = _default_password(self.employee.get("mobile",""), self.employee.get("name",""))
-        if messagebox.askyesno("Confirm", f"Reset to:\n{d}", parent=self):
+        if messagebox.askyesno("Confirm", f"Reset to default:\n{d}", parent=self):
             self._save_creds(d)
 
     def _save_creds(self, plain):
@@ -400,13 +397,13 @@ class CredentialsDialog(tk.Toplevel):
                 "app_password_plain": plain,
             })
             self.pass_lbl.config(text=plain)
-            messagebox.showinfo("✅",f"Password updated:\n{plain}",parent=self)
+            messagebox.showinfo("✅ Saved", f"Password updated:\n{plain}", parent=self)
             if self.on_refresh: self.on_refresh()
         except Exception as ex:
-            messagebox.showerror("Error",str(ex),parent=self)
+            messagebox.showerror("Error", str(ex), parent=self)
 
 
-# ───────────────────── EMPLOYEE DIALOG (Add / Edit) ────────────────────
+# ───────────────────────────── EMPLOYEE DIALOG ─────────────────────────
 class EmployeeDialog(tk.Toplevel):
     def __init__(self, parent, mode="add", employee=None, on_save=None):
         super().__init__(parent)
@@ -431,6 +428,7 @@ class EmployeeDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        _bind_scroll(canvas)   # FIX: mousewheel scroll
         e = self.employee
 
         def field(label, key, default="", show="", width=30):
@@ -468,11 +466,9 @@ class EmployeeDialog(tk.Toplevel):
                   cursor="hand2", command=self._browse_photo).pack(anchor="w", pady=2)
         self.photo_status = tk.Label(pb,
             text=" Current: "+("Set" if e.get("photo_url") else "None"),
-            bg="#0d1b2a", fg="#27ae60" if e.get("photo_url") else "#aaa",
-            font=("Arial",8))
+            bg="#0d1b2a", fg="#27ae60" if e.get("photo_url") else "#aaa", font=("Arial",8))
         self.photo_status.pack(anchor="w")
-        tk.Label(pb, text="JPG/PNG max 2MB", bg="#0d1b2a", fg="#555",
-                 font=("Arial",7)).pack(anchor="w")
+        tk.Label(pb, text="JPG/PNG max 2MB", bg="#0d1b2a", fg="#555", font=("Arial",7)).pack(anchor="w")
         if e.get("photo_url"): self._load_existing_thumb(e["photo_url"])
 
         section("— Mandatory —")
@@ -499,17 +495,15 @@ class EmployeeDialog(tk.Toplevel):
             tk.Entry(pr, textvariable=self.v_app_pass, width=22,
                      bg="#1e3a5f", fg="#f0c040",
                      insertbackground="white", relief="flat", bd=4).pack(side="left", padx=4)
-            tk.Label(pr, text="(auto)", bg="#0d1b2a", fg="#555",
-                     font=("Arial",7)).pack(side="left")
-            tk.Label(frm, text="ℹ️ FirstName + last4 mobile + @123  —  editable",
+            tk.Label(pr, text="(auto)", bg="#0d1b2a", fg="#555", font=("Arial",7)).pack(side="left")
+            tk.Label(frm, text="ℹ️ FirstName + last4 mobile + @123  — editable",
                      bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w")
         else:
             plain = e.get("app_password_plain","")
             disp  = plain if plain else "⚠️ Not set — use 🔑 Credentials"
             tk.Label(frm, text=f"  Current password: {disp}",
                      bg="#0d1b2a",
-                     fg="#27ae60" if plain else "#e67e22",
-                     font=("Arial",9)).pack(anchor="w", pady=(2,0))
+                     fg="#27ae60" if plain else "#e67e22", font=("Arial",9)).pack(anchor="w", pady=(2,0))
 
         section("— Religion & Bonus —")
         self.v_religion = dropdown("Religion","religion",RELIGIONS,"Other")
@@ -531,8 +525,7 @@ class EmployeeDialog(tk.Toplevel):
         name   = self.v_name.get().strip()
         mobile = self.v_mobile.get().strip()
         from utils.db import read
-        company = read("settings","company") or {}
-        domain  = company.get("company_domain","hype")
+        domain = (read("settings","company") or {}).get("company_domain","hype")
         if name:
             self.v_username.set(f"{name.split()[0].lower()}.{domain}")
         if name and mobile:
@@ -583,8 +576,7 @@ class EmployeeDialog(tk.Toplevel):
         name    = self.v_name.get().strip()
         mobile  = self.v_mobile.get().strip()
         aadhaar = self.v_aadhaar.get().strip()
-        try:
-            salary = float(self.v_salary.get().strip())
+        try:    salary = float(self.v_salary.get().strip())
         except ValueError:
             messagebox.showerror("Error","Valid salary required.",parent=self); return
         if not all([name, mobile, aadhaar]):
