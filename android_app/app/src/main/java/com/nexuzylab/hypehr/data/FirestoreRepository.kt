@@ -3,7 +3,10 @@ package com.nexuzylab.hypehr.data
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.*
 
 /**
  * FirestoreRepository — single source of truth for all Firestore operations.
@@ -13,7 +16,7 @@ object FirestoreRepository {
 
     private val db = FirebaseFirestore.getInstance()
 
-    // ── Attendance Stats ─────────────────────────────────────────────────────
+    // ── Attendance Stats ──────────────────────────────────────────────────────
 
     /** Returns attendance summary map for an employee for the current month. */
     suspend fun getAttendanceStats(employeeId: String): Map<String, Any>? {
@@ -30,7 +33,7 @@ object FirestoreRepository {
     /**
      * Returns attendance log entries for a given employee.
      * @param employeeId Firestore UID of the employee.
-     * @param limitDays  How many days of history to fetch (default 30).
+     * @param limitDays  How many days of history to fetch (default 30). Must be Int.
      */
     suspend fun getAttendanceHistory(
         employeeId: String,
@@ -47,36 +50,58 @@ object FirestoreRepository {
     }
 
     /**
-     * Logs an attendance entry (called when security scans a QR code).
-     * @param employeeId  Firestore UID of the scanned employee.
-     * @param scannedBy   Username of the security officer.
-     * @param type        "IN" or "OUT".
-     * @return true on success.
+     * Logs an attendance entry when QR is scanned.
+     *
+     * Called by AttendanceActivity and SecurityScanActivity with named args:
+     *   empId, action, location, empName
+     * All extra params are stored in Firestore for full audit trail.
+     *
+     * @param employeeId  Firestore UID of the scanned employee (= empId from callers)
+     * @param scannedBy   Username/role of who scanned (= empName or security officer)
+     * @param type        Attendance type: "IN" / "OUT" / "MANUAL" (= action from callers)
+     * @param empId       Alias for employeeId — accepts the named-arg callers use
+     * @param action      Alias for type — accepts the named-arg callers use
+     * @param location    Optional location string stored in the log
+     * @param empName     Alias for scannedBy — accepts the named-arg callers use
+     * @return true on success
      */
     suspend fun logAttendance(
-        employeeId: String,
-        scannedBy: String,
-        type: String = "IN"
+        empId: String = "",
+        action: String = "IN",
+        location: String = "",
+        empName: String = "",
+        // canonical params kept for direct calls
+        employeeId: String = empId,
+        scannedBy: String = empName,
+        type: String = action
     ): Boolean {
+        // Resolve which value to actually use (named alias wins if canonical not supplied)
+        val resolvedEmpId    = employeeId.ifEmpty { empId }
+        val resolvedScannedBy = scannedBy.ifEmpty { empName }
+        val resolvedType     = type.ifEmpty { action }.ifEmpty { "IN" }
+
+        if (resolvedEmpId.isEmpty()) return false
+
         return try {
             val today = todayDateKey()
             val logData = mapOf(
-                "employee_id"  to employeeId,
-                "scanned_by"   to scannedBy,
-                "type"         to type,
+                "employee_id"  to resolvedEmpId,
+                "scanned_by"   to resolvedScannedBy,
+                "type"         to resolvedType,
+                "action"       to resolvedType,
+                "location"     to location,
+                "emp_name"     to resolvedScannedBy,
                 "date"         to today,
                 "timestamp"    to Timestamp.now()
             )
-            // Write to attendance_logs collection
             db.collection("attendance_logs").add(logData).await()
 
-            // Also update the daily summary for this employee
             val summaryRef = db.collection("employees")
-                .document(employeeId)
+                .document(resolvedEmpId)
                 .collection("attendance_summary")
                 .document(currentMonthKey())
             db.runTransaction { tx ->
-                val snap = tx.get(summaryRef)
+                val snap    = tx.get(summaryRef)
                 val present = (snap.getLong("present") ?: 0L)
                 tx.set(
                     summaryRef,
@@ -84,16 +109,15 @@ object FirestoreRepository {
                         "present"      to present + 1,
                         "last_updated" to Timestamp.now()
                     ),
-                    com.google.firebase.firestore.SetOptions.merge()
+                    SetOptions.merge()
                 )
             }.await()
             true
         } catch (e: Exception) { false }
     }
 
-    // ── Salary ───────────────────────────────────────────────────────────────
+    // ── Salary ────────────────────────────────────────────────────────────────
 
-    /** Returns list of salary slip maps for an employee (last 12 months). */
     suspend fun getSalaryList(employeeId: String): List<Map<String, Any>> {
         return try {
             val snap = db.collection("salary_slips")
@@ -106,7 +130,6 @@ object FirestoreRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    /** Returns a single salary slip document. */
     suspend fun getSalarySlip(employeeId: String, month: String, year: Int): Map<String, Any>? {
         return try {
             val snap = db.collection("salary_slips")
@@ -121,7 +144,6 @@ object FirestoreRepository {
 
     // ── Admin ────────────────────────────────────────────────────────────────
 
-    /** Returns list of all employees (admin view). */
     suspend fun getAllEmployees(): List<Map<String, Any>> {
         return try {
             val snap = db.collection("employees").get().await()
@@ -129,7 +151,6 @@ object FirestoreRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    /** Returns attendance logs for a specific date (YYYY-MM-DD). */
     suspend fun getAttendanceLogs(date: String): List<Map<String, Any>> {
         return try {
             val snap = db.collection("attendance_logs")
@@ -140,17 +161,17 @@ object FirestoreRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun currentMonthKey(): String {
-        val cal   = java.util.Calendar.getInstance()
-        val month = cal.get(java.util.Calendar.MONTH) + 1
-        val year  = cal.get(java.util.Calendar.YEAR)
+        val cal   = Calendar.getInstance()
+        val month = cal.get(Calendar.MONTH) + 1
+        val year  = cal.get(Calendar.YEAR)
         return "%04d-%02d".format(year, month)
     }
 
     private fun todayDateKey(): String {
-        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-        return sdf.format(java.util.Date())
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        return sdf.format(Date())
     }
 }
