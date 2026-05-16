@@ -65,16 +65,18 @@ def launch_main_app(current_user):
         DashboardModule(f, u)
 
     def load_employees(f, u):
-        from modules.employees import EmployeeModule
-        EmployeeModule(f, u)
+        from modules.employees import EmployeePanel
+        panel = EmployeePanel(f, role=u.get("role", "admin"))
+        panel.pack(fill="both", expand=True)
 
     def load_attendance(f, u):
         from modules.attendance import AttendanceModule
         AttendanceModule(f, u)
 
     def load_salary(f, u):
-        from modules.salary import SalaryModule
-        SalaryModule(f, u)
+        from modules.salary import SalaryPanel
+        panel = SalaryPanel(f, role=u.get("role", "admin"))
+        panel.pack(fill="both", expand=True)
 
     def load_qr(f, u):
         from modules.qr_generator import QRGeneratorModule
@@ -93,7 +95,7 @@ def launch_main_app(current_user):
     add_tab("📅 Attendance", "attendance",   load_attendance)
     add_tab("💰 Salary",     "salary",       load_salary)
     add_tab("🔳 QR Codes",   "qr_generator", load_qr)
-    add_tab("🪪 ID Cards",   "id_card",      load_id_card)
+    add_tab("🪚 ID Cards",   "id_card",      load_id_card)
     add_tab("⚙ Settings",   "settings",     load_settings)
 
     root.mainloop()
