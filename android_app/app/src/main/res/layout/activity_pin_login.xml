@@ -54,7 +54,7 @@
         android:id="@+id/tvLoginWithPassword"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Use Username & Password instead"
+        android:text="Use Username &amp; Password instead"
         android:textColor="@color/colorPrimary"
         android:textSize="13sp"
         android:padding="8dp"
