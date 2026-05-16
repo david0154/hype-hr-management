@@ -37,7 +37,7 @@ PERMISSIONS = {
     "manager": [
         "dashboard", "attendance", "employees"
     ],
-]
+}
 
 ROLE_DISPLAY = {
     "super_admin": "Super Admin",
