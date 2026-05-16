@@ -4,9 +4,9 @@ Role-Based Access Control — Hype HR Management
 ROLES & PERMISSIONS:
   super_admin : All permissions (created at first launch)
   admin       : All permissions except creating super_admin accounts
-  hr          : Employees view/add/edit, attendance view, salary view, bonus pay
+  hr          : Employees view/add/edit, attendance view+mark, salary view, bonus pay
   ca          : Salary generate, bonus pay, salary raise, reports
-  manager     : Attendance view, employee view only
+  manager     : Attendance view+mark, employee view only
 
 SUPER ADMIN DEFAULT CREDENTIALS (change after first login):
   Username : admin.hype
@@ -19,23 +19,23 @@ PERMISSIONS = {
     "super_admin": [
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
-        "id_card", "manage_users", "reports"
+        "id_card", "manage_users", "reports", "mark_attendance"
     ],
     "admin": [
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
-        "id_card", "reports"
+        "id_card", "reports", "mark_attendance"
     ],
     "hr": [
         "dashboard", "employees", "attendance",
-        "salary", "bonus", "id_card", "reports"
+        "salary", "bonus", "id_card", "reports", "mark_attendance"
     ],
     "ca": [
         "dashboard", "salary", "bonus", "salary_raise",
         "attendance", "reports"
     ],
     "manager": [
-        "dashboard", "attendance", "employees"
+        "dashboard", "attendance", "employees", "mark_attendance"
     ],
 }
 
