@@ -1,4 +1,6 @@
 # employees.py — Employee CRUD + Duty/Payment Summary + Android App Credentials
+# FIX: DutyPayDialog now queries sessions by employee_id ONLY (no compound query)
+#      and filters month/year in Python — no composite index needed.
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
@@ -23,9 +25,7 @@ def _default_password(mobile: str, name: str) -> str:
     return f"{first}{last4}@123"
 
 def _bind_scroll(canvas):
-    """Bind mousewheel scroll to a canvas on Windows/Mac/Linux."""
-    def _on_mousewheel(event):
-        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _on_mousewheel(event): canvas.yview_scroll(int(-1*(event.delta/120)), "units")
     def _on_linux_up(event):   canvas.yview_scroll(-1, "units")
     def _on_linux_down(event): canvas.yview_scroll( 1, "units")
     canvas.bind_all("<MouseWheel>",    _on_mousewheel)
@@ -33,7 +33,7 @@ def _bind_scroll(canvas):
     canvas.bind_all("<Button-5>",      _on_linux_down)
 
 
-# ───────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
 class EmployeePanel(tk.Frame):
     def __init__(self, parent, role="admin"):
         super().__init__(parent, bg="#0d1b2a")
@@ -93,7 +93,6 @@ class EmployeePanel(tk.Frame):
                     and query.lower() not in e.get("employee_id","").lower():
                 continue
             self.employees[e["employee_id"]] = e
-            # FIX: check app_password_hash properly
             ph = e.get("app_password_hash", "").strip()
             has_pass = "✅ Active" if ph else "❌ Not Set"
             self.tree.insert("", "end", iid=e["employee_id"], values=(
@@ -122,13 +121,10 @@ class EmployeePanel(tk.Frame):
         if not sel: messagebox.showinfo("Select","Select an employee first."); return
         emp = self.employees.get(self.tree.item(sel[0])["values"][0])
         if emp:
-            # Re-fetch fresh from Firestore so password_hash is current
             try:
                 doc = self.db.collection("employees").document(emp["employee_id"]).get()
-                if doc.exists:
-                    emp = doc.to_dict()
-            except Exception:
-                pass
+                if doc.exists: emp = doc.to_dict()
+            except Exception: pass
             CredentialsDialog(self, employee=emp, on_refresh=self._load)
 
     def _show_duty_pay(self):
@@ -207,29 +203,30 @@ class DutyPayDialog(tk.Toplevel):
         month_idx = MONTHS.index(self.month_var.get()) + 1
         try: year = int(self.year_var.get().strip())
         except ValueError: return
-        emp_id = self.emp["employee_id"]
-        salary = float(self.emp.get("salary", 0))
-        advance= float(self.emp.get("advance", 0))
-        working_d = 26
-        day_rate  = salary / working_d
-        half_rate = day_rate / 2
-        month_str = f"{year}-{month_idx:02d}"
+        emp_id   = self.emp["employee_id"]
+        salary   = float(self.emp.get("salary", 0))
+        advance  = float(self.emp.get("advance", 0))
+        day_rate = salary / 26
+        month_str= f"{year}-{month_idx:02d}"
         _, days_in_month = calendar.monthrange(year, month_idx)
+
+        # FIX: query ONLY by employee_id (single-field, no composite index needed)
+        # Filter by month in Python instead — avoids Firestore 400 error
         try:
-            sessions = {}
-            # FIX: use filter= keyword to suppress Firestore warning
             from google.cloud.firestore_v1.base_query import FieldFilter
             docs = self.db.collection("sessions") \
-                .where(filter=FieldFilter("employee_id", "==", emp_id)) \
-                .where(filter=FieldFilter("date", ">=", f"{month_str}-01")) \
-                .where(filter=FieldFilter("date", "<=", f"{month_str}-{days_in_month:02d}")).stream()
-            for doc in docs:
-                s = doc.to_dict(); sessions[s["date"]] = s
+                .where(filter=FieldFilter("employee_id", "==", emp_id)).stream()
+            sessions = {
+                s["date"]: s
+                for doc in docs
+                for s in [doc.to_dict()]
+                if s.get("date", "").startswith(month_str)   # filter month in Python
+            }
         except Exception as ex:
             messagebox.showerror("Error", str(ex), parent=self); return
 
         total_present = 0.0; total_absent = 0; total_half = 0
-        total_ot_days = 0;   gross_pay = 0.0
+        total_ot_days = 0;   gross_pay    = 0.0
 
         for day in range(1, days_in_month+1):
             date_str = f"{month_str}-{day:02d}"
@@ -246,8 +243,8 @@ class DutyPayDialog(tk.Toplevel):
                 duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","—","—",""
 
             if duty=="full":   dp=day_rate;  total_present+=1
-            elif duty=="half": dp=half_rate; total_half+=1; total_present+=0.5
-            else:              dp=0;         total_absent+=(0 if is_sunday else 1)
+            elif duty=="half": dp=day_rate/2; total_half+=1; total_present+=0.5
+            else:              dp=0;          total_absent+=(0 if is_sunday else 1)
 
             op=0
             if ot in ("full","half"):
@@ -288,7 +285,6 @@ class CredentialsDialog(tk.Toplevel):
         self._build()
 
     def _build(self):
-        # ── Scrollable canvas for the whole dialog ──────────────────
         canvas = tk.Canvas(self, bg="#0d1b2a", highlightthickness=0)
         vsb    = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         frm    = tk.Frame(canvas, bg="#0d1b2a", padx=28, pady=20)
@@ -322,36 +318,27 @@ class CredentialsDialog(tk.Toplevel):
                       font=("Arial",8), padx=6).pack(side="right")
             return lbl
 
-        username = e.get("username", "")
-        # FIX: check hash properly — non-empty string = active
+        username   = e.get("username", "")
         ph         = e.get("app_password_hash", "").strip()
         plain_pass = e.get("app_password_plain", "").strip()
-        is_active  = bool(ph)   # True only if hash exists in Firestore
-
+        is_active  = bool(ph)
         if not plain_pass:
             plain_pass = _default_password(e.get("mobile",""), e.get("name",""))
 
         cred_row("Username:", username)
         self.pass_lbl = cred_row("Password:", plain_pass)
 
-        # Status — green if hash exists, orange if default shown
-        if is_active:
-            st_text, st_color = "✅  Password is active", "#27ae60"
-        else:
-            st_text, st_color = "⚠️  Not yet saved — click Set Password below", "#e67e22"
-
-        tk.Label(card, text=st_text, bg="#1a2740",
-                 fg=st_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
+        st_text  = "✅  Password is active"         if is_active else "⚠️  Not yet saved — click Set Password below"
+        st_color = "#27ae60"                        if is_active else "#e67e22"
+        tk.Label(card, text=st_text, bg="#1a2740", fg=st_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
 
         info = tk.Frame(frm, bg="#132030", padx=12, pady=10)
         info.pack(fill="x", pady=(0,14))
-        tk.Label(info,
-                 text="ℹ️  How employee logs into Android app:",
+        tk.Label(info, text="ℹ️  How employee logs into Android app:",
                  bg="#132030", fg="#f0c040", font=("Arial",9,"bold")).pack(anchor="w")
-        tk.Label(info,
-                 text=f"  • Open Hype HR Employee App\n"
-                      f"  • Username: {username}\n"
-                      f"  • Password: {plain_pass}",
+        tk.Label(info, text=f"  • Open Hype HR Employee App\n"
+                            f"  • Username: {username}\n"
+                            f"  • Password: {plain_pass}",
                  bg="#132030", fg="#ccc", font=("Arial",9), justify="left").pack(anchor="w", pady=(4,0))
 
         tk.Label(frm, text="— Reset Password —",
@@ -428,7 +415,7 @@ class EmployeeDialog(tk.Toplevel):
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        _bind_scroll(canvas)   # FIX: mousewheel scroll
+        _bind_scroll(canvas)
         e = self.employee
 
         def field(label, key, default="", show="", width=30):

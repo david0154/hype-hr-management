@@ -21,7 +21,6 @@ def read(collection: str, doc_id: str) -> dict | None:
     data  = cache.get(collection, doc_id)
     if data is not None:
         return data
-    # Cache miss — fetch from Firebase and store
     try:
         doc = get_db().collection(collection).document(doc_id).get()
         if doc.exists:
@@ -34,10 +33,11 @@ def read(collection: str, doc_id: str) -> dict | None:
 
 def read_all(collection: str,
              where_key: str = None,
-             where_value = None) -> list[dict]:
+             where_value=None) -> list[dict]:
     """
     Read all docs in a collection from cache.
     If cache is empty, fetch from Firebase and populate.
+    FIX: uses filter=FieldFilter() keyword to suppress Firestore UserWarning.
     """
     cache = get_cache()
     rows  = cache.get_all(collection, where_key, where_value)
@@ -47,7 +47,9 @@ def read_all(collection: str,
     try:
         q = get_db().collection(collection)
         if where_key and where_value is not None:
-            q = q.where(where_key, "==", where_value)
+            # FIX: use filter= keyword argument instead of positional args
+            from google.cloud.firestore_v1.base_query import FieldFilter
+            q = q.where(filter=FieldFilter(where_key, "==", where_value))
         records = []
         for doc in q.stream():
             cache.put(collection, doc.id, doc.to_dict())
