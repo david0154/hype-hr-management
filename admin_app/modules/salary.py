@@ -1,4 +1,4 @@
-# salary.py — Salary Panel + Bonus Logic (religion-based dates)
+# salary.py — Salary Panel + Month-End Generation + Bonus Logic (religion-based dates)
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
@@ -18,7 +18,7 @@ MONTH_MAP = {
 }
 
 
-# ─── Bonus helpers ──────────────────────────────────────────────────────────────────
+# ─── Bonus helpers ───────────────────────────────────────────────────────────
 def get_bonus_config():
     return read("settings", "bonus_dates") or {}
 
@@ -38,11 +38,9 @@ def is_bonus_month_for_religion(religion: str, month: int, year: int) -> bool:
 
 
 def is_bonus_eligible(employee_id: str, current_year: int) -> bool:
-    """Employee must have worked >= BONUS_MIN_DAYS in previous year."""
     app_settings = get_app_settings()
     min_days  = int(app_settings.get("bonus_min_days", BONUS_MIN_DAYS))
     prev_year = current_year - 1
-    # FIX: correct read_all signature — (collection, where_key, where_value)
     sessions  = read_all("sessions", "employee_id", employee_id)
     total = sum(
         1.0 if s.get("duty_status") == "full" else
@@ -65,7 +63,7 @@ def calculate_bonus(base_salary, absent_days, working_days=WORKING_DAYS):
     return round(max(base_salary - absent_days * daily_rate, 0), 2)
 
 
-# ─── Main salary calculation ─────────────────────────────────────────────────────────────────
+# ─── Main salary calculation ─────────────────────────────────────────────────
 def calculate_salary(employee, month_sessions, month, year, working_days=None):
     if working_days is None:
         working_days = int(get_app_settings().get("working_days", WORKING_DAYS))
@@ -108,6 +106,7 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
     return {
         "employee_id":       employee["employee_id"],
         "name":              employee["name"],
+        "designation":       employee.get("designation", ""),
         "religion":          religion,
         "base_salary":       base_salary,
         "full_days":         full_days,
@@ -125,6 +124,7 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
         "advance":           advance,
         "final_salary":      final_salary,
         "payment_mode":      employee.get("payment_mode", "CASH"),
+        "department":        employee.get("department", ""),
         "month":             month,
         "year":              year,
     }
@@ -150,7 +150,7 @@ def _count_paid_sundays(employee_id, month, year, sessions_map):
     return paid
 
 
-# ─── Advance Panel ─────────────────────────────────────────────────────────────────────
+# ─── Advance Panel ────────────────────────────────────────────────────────────
 class AdvancePanel(tk.Toplevel):
     def __init__(self, parent, employee):
         super().__init__(parent)
@@ -233,7 +233,7 @@ class AdvancePanel(tk.Toplevel):
         self.destroy()
 
 
-# ─── Salary Panel (main tab) ───────────────────────────────────────────────────────────────────
+# ─── Salary Panel (main tab) ──────────────────────────────────────────────────
 class SalaryPanel(tk.Frame):
     def __init__(self, parent, role="admin"):
         super().__init__(parent, bg="#0d1b2a")
@@ -241,16 +241,28 @@ class SalaryPanel(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        hdr = tk.Frame(self, bg="#1a2740", pady=10)
+        # Two sub-tabs: Monthly Overview  |  Month-End Generate
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True)
+
+        # Tab 1 — individual salary list
+        tab1 = tk.Frame(nb, bg="#0d1b2a")
+        nb.add(tab1, text="  💰 Monthly Overview  ")
+        self._build_overview(tab1)
+
+        # Tab 2 — bulk month-end generation + export
+        from modules.salary_monthend import MonthEndPanel
+        tab2 = MonthEndPanel(nb, role=self.role)
+        nb.add(tab2, text="  📅 Month-End Generate & Export  ")
+
+    def _build_overview(self, parent):
+        hdr = tk.Frame(parent, bg="#1a2740", pady=10)
         hdr.pack(fill="x")
         tk.Label(hdr, text="💰 Salary Management",
                  font=("Helvetica", 14, "bold"), bg="#1a2740", fg="white").pack(side="left", padx=12)
 
-        bar = tk.Frame(self, bg="#0d1b2a")
+        bar = tk.Frame(parent, bg="#0d1b2a")
         bar.pack(fill="x", padx=12, pady=6)
-        tk.Button(bar, text="⚡ Generate All",
-                  command=self._generate_all,
-                  bg="#2980b9", fg="white", padx=10, relief="flat").pack(side="left", padx=4)
         tk.Button(bar, text="💵 Advance Payment",
                   command=self._open_advance,
                   bg="#e67e22", fg="white", padx=10, relief="flat").pack(side="left", padx=4)
@@ -262,7 +274,7 @@ class SalaryPanel(tk.Frame):
                   command=self._load,
                   bg="#555", fg="white", padx=10, relief="flat").pack(side="left", padx=4)
 
-        sel = tk.Frame(self, bg="#0d1b2a")
+        sel = tk.Frame(parent, bg="#0d1b2a")
         sel.pack(fill="x", padx=12, pady=4)
         tk.Label(sel, text="Month:", bg="#0d1b2a", fg="#ccc").pack(side="left")
         self.month_var = tk.StringVar(value=str(datetime.now().month))
@@ -274,7 +286,7 @@ class SalaryPanel(tk.Frame):
                  bg="#1e3a5f", fg="white", insertbackground="white").pack(side="left", padx=4)
 
         cols = ("id", "name", "religion", "base", "advance", "bonus", "final", "status")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=18)
+        self.tree = ttk.Treeview(parent, columns=cols, show="headings", height=18)
         for col, w, label in [
             ("id",       90,  "Emp ID"),
             ("name",     160, "Name"),
@@ -293,7 +305,6 @@ class SalaryPanel(tk.Frame):
 
     def _load(self):
         self.tree.delete(*self.tree.get_children())
-        # FIX: correct read_all signature — (collection, where_key, where_value)
         employees = read_all("employees", "status", "active")
         self.employees = {e["employee_id"]: e for e in employees}
         bonus_config = read("settings", "bonus_dates") or {}
@@ -326,41 +337,6 @@ class SalaryPanel(tk.Frame):
     def _on_double(self, _e):
         emp = self._selected_employee()
         if emp: AdvancePanel(self, emp)
-
-    def _generate_all(self):
-        try:
-            month = int(self.month_var.get())
-            year  = int(self.year_var.get())
-        except ValueError:
-            messagebox.showerror("Error", "Invalid month/year."); return
-        if not messagebox.askyesno("Confirm",
-                f"Generate salaries for all active employees for "
-                f"{calendar.month_name[month]} {year}?"):
-            return
-        ok = fail = 0
-        # FIX: correct read_all signature
-        for emp in read_all("employees", "status", "active"):
-            try:
-                # FIX: sessions — filter by employee_id only (month/year filter done in-code)
-                all_sessions = read_all("sessions", "employee_id", emp["employee_id"])
-                month_str    = f"{year}-{month:02d}"
-                sessions     = [s for s in all_sessions
-                                if s.get("date", "").startswith(month_str)]
-                result   = calculate_salary(emp, sessions, month, year)
-                slip_key = f"{emp['employee_id']}_{year}_{month:02d}"
-                write("salary", slip_key, {
-                    **result,
-                    "generated_at": datetime.now().isoformat(),
-                })
-                if result["advance"] > 0:
-                    update("employees", emp["employee_id"], {"advance": 0})
-                ok += 1
-            except Exception as ex:
-                print(f"[SalaryPanel] {emp.get('employee_id')}: {ex}")
-                fail += 1
-        messagebox.showinfo("Done",
-            f"Salary generation complete.\n✅ {ok} success  ❌ {fail} failed")
-        self._load()
 
     def _salary_raise(self):
         emp = self._selected_employee()
