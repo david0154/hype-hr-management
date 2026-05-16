@@ -10,40 +10,56 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="@color/colorPrimaryDark"
+        android:background="@color/colorPrimary"
         app:titleTextColor="@color/white"
-        app:title="Security Panel"/>
+        app:title="Security Dashboard"/>
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
-        android:orientation="vertical" android:gravity="center"
-        android:padding="24dp">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
 
-        <TextView android:id="@+id/tvSecUser"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="Logged in: —" android:textSize="14sp"
+        <TextView
+            android:id="@+id/tvSecurityName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Security Officer"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@color/colorText"
+            android:layout_marginBottom="4dp"/>
+
+        <TextView
+            android:id="@+id/tvInstructions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Scan employee QR codes to mark attendance"
+            android:textSize="13sp"
             android:textColor="@color/colorTextMuted"
-            android:layout_marginBottom="32dp" android:gravity="center"/>
+            android:layout_marginBottom="16dp"/>
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnScanEmployeeIn"
-            android:layout_width="match_parent" android:layout_height="64dp"
-            android:text="→ Mark Employee IN" android:textSize="16sp"
-            android:layout_marginBottom="16dp" app:cornerRadius="14dp"
-            app:backgroundTint="@color/colorSuccess"/>
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnScanEmployeeOut"
-            android:layout_width="match_parent" android:layout_height="64dp"
-            android:text="← Mark Employee OUT" android:textSize="16sp"
-            android:layout_marginBottom="32dp" app:cornerRadius="14dp"
-            app:backgroundTint="@color/colorError"/>
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSecLogout"
-            android:layout_width="match_parent" android:layout_height="52dp"
+            android:id="@+id/btnLogout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:text="Logout"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            app:strokeColor="@color/colorPrimary" app:cornerRadius="12dp"/>
+            app:strokeColor="@color/colorError"
+            android:textColor="@color/colorError"/>
 
     </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/previewView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+
+    </FrameLayout>
+
 </LinearLayout>

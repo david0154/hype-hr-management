@@ -2,7 +2,6 @@ package com.nexuzylab.hypehr.ui
 
 import android.content.Intent
 import android.graphics.*
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -10,21 +9,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.WriterException
+import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.nexuzylab.hypehr.databinding.ActivityIdCardBinding
-import com.androidmads.qrgenerator.QRGEncoder
-import com.androidmads.qrgenerator.QRGContents
 import java.io.File
 import java.io.FileOutputStream
 
 /**
  * IdCardActivity — Generates and displays the employee ID card.
- * The card includes:
- *   • Company name & branding
- *   • Employee name, ID, designation
- *   • Aadhaar (masked)
- *   • QR code encoding the employee ID (for security scanning)
- *   • Share / Print options
- *
  * Developed by David | Nexuzy Lab
  */
 class IdCardActivity : AppCompatActivity() {
@@ -46,7 +39,6 @@ class IdCardActivity : AppCompatActivity() {
             finish()
             return
         }
-
         loadEmployee(empId)
     }
 
@@ -76,12 +68,8 @@ class IdCardActivity : AppCompatActivity() {
     }
 
     private fun renderCard(
-        uid:         String,
-        employeeId:  String,
-        name:        String,
-        designation: String,
-        aadhaar:     String,
-        companyName: String
+        uid: String, employeeId: String, name: String,
+        designation: String, aadhaar: String, companyName: String
     ) {
         binding.tvCompanyName.text = companyName.uppercase()
         binding.tvName.text        = name
@@ -89,12 +77,11 @@ class IdCardActivity : AppCompatActivity() {
         binding.tvDesignation.text = designation
         binding.tvAadhaar.text     = aadhaar
 
-        // Generate QR code encoding the employee_id (for security scanning)
-        val qrContent = "EMP:$employeeId"
         try {
-            val encoder = QRGEncoder(qrContent, null, QRGContents.Type.TEXT, 300)
-            binding.ivQrCode.setImageBitmap(encoder.bitmap)
-        } catch (e: Exception) {
+            val encoder = BarcodeEncoder()
+            val bitmap  = encoder.encodeBitmap("EMP:$employeeId", BarcodeFormat.QR_CODE, 300, 300)
+            binding.ivQrCode.setImageBitmap(bitmap)
+        } catch (e: WriterException) {
             Log.e(TAG, "QR generation failed: ${e.message}")
         }
 
@@ -106,29 +93,18 @@ class IdCardActivity : AppCompatActivity() {
         val w = 800; val h = 500
         val bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c  = Canvas(bm)
-
         val bgPaint = Paint().apply { color = Color.parseColor("#1A2740") }
         c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), bgPaint)
-
         val strip = Paint().apply { color = Color.parseColor("#F77F00") }
         c.drawRect(0f, 0f, 12f, h.toFloat(), strip)
         c.drawRect(0f, (h - 60).toFloat(), w.toFloat(), h.toFloat(), strip)
-
         val paintWh = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color    = Color.WHITE
-            textSize = 32f
-            typeface = Typeface.DEFAULT_BOLD
+            color = Color.WHITE; textSize = 32f; typeface = Typeface.DEFAULT_BOLD
         }
         c.drawText(binding.tvCompanyName.text.toString(), 30f, 55f, paintWh)
-
-        val div = Paint().apply { color = Color.parseColor("#F77F00"); strokeWidth = 2f }
-        c.drawLine(30f, 70f, (w - 30).toFloat(), 70f, div)
-
-        val infoSm  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 18f }
+        val infoSm = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 18f }
         val infoBig = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color    = Color.WHITE
-            textSize = 26f
-            typeface = Typeface.DEFAULT_BOLD
+            color = Color.WHITE; textSize = 26f; typeface = Typeface.DEFAULT_BOLD
         }
         c.drawText("Name:",        30f, 115f, infoSm)
         c.drawText(binding.tvName.text.toString(), 150f, 115f, infoBig)
@@ -138,20 +114,15 @@ class IdCardActivity : AppCompatActivity() {
         c.drawText(binding.tvDesignation.text.toString(), 200f, 195f, infoSm)
         c.drawText("Aadhaar:",     30f, 235f, infoSm)
         c.drawText(binding.tvAadhaar.text.toString(), 175f, 235f, infoSm)
-
         val qrBm = binding.ivQrCode.let {
             val d = it.drawable ?: return@let null
             val qrBitmap = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888)
             val qrCanvas = Canvas(qrBitmap)
-            d.setBounds(0, 0, 160, 160)
-            d.draw(qrCanvas)
-            qrBitmap
+            d.setBounds(0, 0, 160, 160); d.draw(qrCanvas); qrBitmap
         }
         if (qrBm != null) c.drawBitmap(qrBm, (w - 190).toFloat(), 80f, null)
-
-        val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 16f }
-        c.drawText("Hype HR Management | Nexuzy Lab", 30f, (h - 20).toFloat(), footerPaint)
-
+        val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 16f }
+        c.drawText("Hype HR Management | Nexuzy Lab", 30f, (h - 20).toFloat(), fp)
         return bm
     }
 
@@ -161,7 +132,7 @@ class IdCardActivity : AppCompatActivity() {
         FileOutputStream(file).use { bm.compress(Bitmap.CompressFormat.PNG, 100, it) }
         val uri  = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type  = "image/png"
+            type = "image/png"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }

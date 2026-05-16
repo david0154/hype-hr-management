@@ -9,12 +9,21 @@
     android:background="@color/colorBackground">
 
     <TextView
+        android:id="@+id/tvWelcome"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Enter PIN"
-        android:textSize="24sp"
+        android:text="Welcome Back!"
+        android:textSize="22sp"
         android:textStyle="bold"
         android:textColor="@color/colorText"
+        android:layout_marginBottom="8dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Enter your PIN to continue"
+        android:textSize="14sp"
+        android:textColor="@color/colorTextMuted"
         android:layout_marginBottom="32dp"/>
 
     <com.google.android.material.textfield.TextInputLayout
@@ -22,7 +31,6 @@
         android:layout_height="wrap_content"
         style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
         android:layout_marginBottom="24dp">
-
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/etPin"
             android:layout_width="match_parent"
@@ -33,7 +41,6 @@
             android:gravity="center"
             android:textSize="24sp"
             android:letterSpacing="0.3"/>
-
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.button.MaterialButton
@@ -41,7 +48,8 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:text="Unlock"
-        app:cornerRadius="12dp"/>
+        app:cornerRadius="12dp"
+        android:layout_marginBottom="12dp"/>
 
     <TextView
         android:id="@+id/tvPinError"
@@ -50,7 +58,16 @@
         android:text="Incorrect PIN"
         android:textColor="@color/colorError"
         android:textSize="14sp"
-        android:layout_marginTop="12dp"
-        android:visibility="gone"/>
+        android:visibility="gone"
+        android:layout_marginBottom="12dp"/>
+
+    <TextView
+        android:id="@+id/tvForgotPin"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Forgot PIN? Login with email"
+        android:textSize="13sp"
+        android:textColor="@color/colorPrimary"
+        android:padding="8dp"/>
 
 </LinearLayout>

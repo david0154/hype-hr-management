@@ -20,49 +20,50 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Set a 4-6 digit PIN for quick daily access"
-        android:textSize="14sp"
+        android:text="Create a 4-6 digit PIN for quick access"
+        android:textSize="13sp"
         android:textColor="@color/colorTextMuted"
-        android:gravity="center"
         android:layout_marginBottom="32dp"/>
 
     <com.google.android.material.textfield.TextInputLayout
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="@string/label_pin"
-        app:passwordToggleEnabled="true"
-        android:layout_marginBottom="16dp">
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+        android:layout_marginBottom="12dp">
         <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/etPin"
+            android:id="@+id/etNewPin"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:hint="New PIN"
             android:inputType="numberPassword"
             android:maxLength="6"
-            android:imeOptions="actionNext"/>
+            android:gravity="center"
+            android:textSize="22sp"
+            android:letterSpacing="0.3"/>
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.textfield.TextInputLayout
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="@string/label_pin_confirm"
-        app:passwordToggleEnabled="true"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
         android:layout_marginBottom="24dp">
         <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/etPinConfirm"
+            android:id="@+id/etConfirmPin"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:hint="Confirm PIN"
             android:inputType="numberPassword"
             android:maxLength="6"
-            android:imeOptions="actionDone"/>
+            android:gravity="center"
+            android:textSize="22sp"
+            android:letterSpacing="0.3"/>
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnSavePin"
+        android:id="@+id/btnSetPin"
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:text="@string/btn_set_pin"
+        android:text="Set PIN"
         app:cornerRadius="12dp"/>
 
 </LinearLayout>

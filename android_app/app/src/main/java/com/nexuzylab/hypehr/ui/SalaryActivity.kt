@@ -1,7 +1,6 @@
 package com.nexuzylab.hypehr.ui
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -18,14 +17,8 @@ import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
 
 /**
- * Hype HR Management — Salary List Screen
- *
- * Shows last 12 months of salary slips (expired ones are filtered out).
- * Each card shows: Month/Year, Final Salary, Payment Mode.
- * "Download Slip" opens PDF if slip_url is available; shows "Pending" if PHP
- * cron hasn't uploaded yet.
- *
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * SalaryActivity (ui package) — Shows last 12 months of salary slips.
+ * Developed by David | Nexuzy Lab
  */
 class SalaryActivity : AppCompatActivity() {
 
@@ -58,7 +51,6 @@ class SalaryActivity : AppCompatActivity() {
                     binding.rvSalary.adapter = SalaryAdapter(list) { item ->
                         val url = item["slip_url"] as? String ?: ""
                         if (url.isNotEmpty()) {
-                            // Open PDF — try in-app viewer first
                             startActivity(
                                 Intent(this@SalaryActivity, SalarySlipViewerActivity::class.java)
                                     .putExtra(SalarySlipViewerActivity.EXTRA_URL, url)
@@ -74,7 +66,6 @@ class SalaryActivity : AppCompatActivity() {
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
-    // ── Adapter ──────────────────────────────────────────────────────────
     private class SalaryAdapter(
         private val items: List<Map<String, Any>>,
         private val onView: (Map<String, Any>) -> Unit
@@ -89,8 +80,7 @@ class SalaryActivity : AppCompatActivity() {
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-            VH(LayoutInflater.from(parent.context)
-                .inflate(R.layout.item_salary, parent, false))
+            VH(LayoutInflater.from(parent.context).inflate(R.layout.item_salary, parent, false))
 
         override fun getItemCount() = items.size
 
@@ -100,7 +90,6 @@ class SalaryActivity : AppCompatActivity() {
             holder.tvAmount.text = "₹ %.2f".format(
                 (item["final_salary"] as? Number)?.toDouble() ?: 0.0)
             holder.tvMode.text   = "Mode: ${item["payment_mode"] as? String ?: "CASH"}"
-
             val url = item["slip_url"] as? String ?: ""
             if (url.isNotEmpty()) {
                 holder.tvStatus.text = "📄 Slip Available"
