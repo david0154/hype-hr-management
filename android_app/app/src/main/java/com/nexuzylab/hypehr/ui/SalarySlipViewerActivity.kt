@@ -23,6 +23,11 @@ import com.nexuzylab.hypehr.databinding.ActivitySalarySlipViewerBinding
  */
 class SalarySlipViewerActivity : AppCompatActivity() {
 
+    companion object {
+        const val EXTRA_URL   = "slip_url"
+        const val EXTRA_TITLE = "month_label"
+    }
+
     private lateinit var binding: ActivitySalarySlipViewerBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -30,9 +35,10 @@ class SalarySlipViewerActivity : AppCompatActivity() {
         binding = ActivitySalarySlipViewerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        val slipUrl   = intent.getStringExtra("slip_url")
-        val monthLabel = intent.getStringExtra("month_label") ?: "Salary Slip"
+        val slipUrl    = intent.getStringExtra(EXTRA_URL)
+        val monthLabel = intent.getStringExtra(EXTRA_TITLE) ?: "Salary Slip"
         supportActionBar?.title = monthLabel
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         if (slipUrl.isNullOrBlank()) {
             Toast.makeText(this, "No slip URL provided", Toast.LENGTH_SHORT).show()
@@ -40,16 +46,13 @@ class SalarySlipViewerActivity : AppCompatActivity() {
             return
         }
 
-        // Use Google Docs viewer to render PDF in WebView (no local PDF support needed)
         val viewerUrl = "https://docs.google.com/gview?embedded=true&url=${Uri.encode(slipUrl)}"
 
-        binding.webView.apply {
-            settings.javaScriptEnabled = true
-            settings.builtInZoomControls = true
-            settings.displayZoomControls = false
-            webViewClient = WebViewClient()
-            loadUrl(viewerUrl)
-        }
+        binding.webView.settings.javaScriptEnabled = true
+        binding.webView.settings.builtInZoomControls = true
+        binding.webView.settings.displayZoomControls = false
+        binding.webView.webViewClient = WebViewClient()
+        binding.webView.loadUrl(viewerUrl)
 
         binding.btnOpen.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(slipUrl)))
@@ -57,11 +60,13 @@ class SalarySlipViewerActivity : AppCompatActivity() {
 
         binding.btnPrint.setOnClickListener {
             val printManager = getSystemService(PRINT_SERVICE) as PrintManager
-            val job = printManager.print(
+            printManager.print(
                 "Salary Slip",
                 binding.webView.createPrintDocumentAdapter("salary_slip"),
                 PrintAttributes.Builder().build()
             )
         }
     }
+
+    override fun onSupportNavigateUp(): Boolean { finish(); return true }
 }

@@ -14,6 +14,14 @@
         app:titleTextColor="@color/white"
         app:title="Hype HR"/>
 
+    <ProgressBar
+        android:id="@+id/progressDash"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone"
+        style="?attr/progressBarStyle"/>
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -67,6 +75,16 @@
                         android:textColor="@color/white"
                         android:textSize="14sp"
                         android:alpha="0.9"
+                        android:layout_marginBottom="2dp"/>
+
+                    <TextView
+                        android:id="@+id/tvDesignation"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Designation"
+                        android:textColor="@color/white"
+                        android:textSize="12sp"
+                        android:alpha="0.85"
                         android:layout_marginBottom="4dp"/>
 
                     <TextView
@@ -94,18 +112,18 @@
                     app:cardCornerRadius="10dp"
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
-                    android:layout_marginEnd="6dp">
+                    android:layout_marginEnd="4dp">
                     <LinearLayout android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical"
                         android:gravity="center"
-                        android:padding="16dp">
+                        android:padding="12dp">
                         <TextView android:id="@+id/tvPresent" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0"
-                            android:textSize="24sp" android:textStyle="bold"
+                            android:textSize="22sp" android:textStyle="bold"
                             android:textColor="@color/colorSuccess"/>
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="@string/total_present" android:textSize="11sp"
+                            android:text="@string/total_present" android:textSize="10sp"
                             android:textColor="@color/colorTextMuted"/>
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
@@ -117,41 +135,64 @@
                     app:cardCornerRadius="10dp"
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
-                    android:layout_marginHorizontal="3dp">
+                    android:layout_marginHorizontal="4dp">
                     <LinearLayout android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical"
                         android:gravity="center"
-                        android:padding="16dp">
-                        <TextView android:id="@+id/tvAbsent" android:layout_width="wrap_content"
+                        android:padding="12dp">
+                        <TextView android:id="@+id/tvHalfDays" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0"
-                            android:textSize="24sp" android:textStyle="bold"
-                            android:textColor="@color/colorError"/>
-                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="@string/total_absent" android:textSize="11sp"
-                            android:textColor="@color/colorTextMuted"/>
-                    </LinearLayout>
-                </androidx.cardview.widget.CardView>
-
-                <androidx.cardview.widget.CardView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    app:cardCornerRadius="10dp"
-                    app:cardElevation="2dp"
-                    app:cardBackgroundColor="@color/colorSurface"
-                    android:layout_marginStart="6dp">
-                    <LinearLayout android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:gravity="center"
-                        android:padding="16dp">
-                        <TextView android:id="@+id/tvOtHours" android:layout_width="wrap_content"
-                            android:layout_height="wrap_content" android:text="0 hrs"
-                            android:textSize="18sp" android:textStyle="bold"
+                            android:textSize="22sp" android:textStyle="bold"
                             android:textColor="@color/colorWarning"/>
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                            android:text="@string/total_ot" android:textSize="11sp"
+                            android:text="Half Days" android:textSize="10sp"
+                            android:textColor="@color/colorTextMuted"/>
+                    </LinearLayout>
+                </androidx.cardview.widget.CardView>
+
+                <androidx.cardview.widget.CardView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    app:cardCornerRadius="10dp"
+                    app:cardElevation="2dp"
+                    app:cardBackgroundColor="@color/colorSurface"
+                    android:layout_marginHorizontal="4dp">
+                    <LinearLayout android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:gravity="center"
+                        android:padding="12dp">
+                        <TextView android:id="@+id/tvAbsent" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="0"
+                            android:textSize="22sp" android:textStyle="bold"
+                            android:textColor="@color/colorError"/>
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="@string/total_absent" android:textSize="10sp"
+                            android:textColor="@color/colorTextMuted"/>
+                    </LinearLayout>
+                </androidx.cardview.widget.CardView>
+
+                <androidx.cardview.widget.CardView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    app:cardCornerRadius="10dp"
+                    app:cardElevation="2dp"
+                    app:cardBackgroundColor="@color/colorSurface"
+                    android:layout_marginStart="4dp">
+                    <LinearLayout android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:gravity="center"
+                        android:padding="12dp">
+                        <TextView android:id="@+id/tvOtHours" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="0 hrs"
+                            android:textSize="16sp" android:textStyle="bold"
+                            android:textColor="@color/colorWarning"/>
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="@string/total_ot" android:textSize="10sp"
                             android:textColor="@color/colorTextMuted"/>
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
