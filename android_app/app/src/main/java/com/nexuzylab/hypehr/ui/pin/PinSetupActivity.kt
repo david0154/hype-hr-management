@@ -1,13 +1,3 @@
-/**
- * Hype HR Management — PIN Setup Activity
- * Employee sets a 4-digit PIN after first login. Used for fast daily access.
- *
- * @author  David
- * @org     Nexuzy Lab
- * @email   nexuzylab@gmail.com
- * @github  https://github.com/david0154
- * @project Hype HR Management System
- */
 package com.nexuzylab.hypehr.ui.pin
 
 import android.content.Intent
@@ -15,33 +5,32 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.nexuzylab.hypehr.databinding.ActivityPinSetupBinding
-import com.nexuzylab.hypehr.ui.dashboard.DashboardActivity
-import com.nexuzylab.hypehr.util.SessionManager
+import com.nexuzylab.hypehr.ui.DashboardActivity
+import com.nexuzylab.hypehr.utils.SessionManager
 
+/**
+ * PinSetupActivity (ui.pin package).
+ * Developed by David | Nexuzy Lab
+ */
 class PinSetupActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPinSetupBinding
-    private lateinit var session: SessionManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPinSetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        session = SessionManager(this)
 
         binding.btnSetPin.setOnClickListener {
-            val pin  = binding.etPin.text.toString().trim()
-            val pin2 = binding.etPinConfirm.text.toString().trim()
+            val pin     = binding.etNewPin.text.toString().trim()
+            val confirm = binding.etConfirmPin.text.toString().trim()
             when {
-                pin.length != 4 ->
-                    Toast.makeText(this, "PIN must be exactly 4 digits", Toast.LENGTH_SHORT).show()
-                pin != pin2 ->
-                    Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
+                pin.length < 4 -> Toast.makeText(this, "Minimum 4 digits", Toast.LENGTH_SHORT).show()
+                pin != confirm -> Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
                 else -> {
-                    session.savePin(pin)
-                    Toast.makeText(this, "PIN set successfully!", Toast.LENGTH_SHORT).show()
+                    SessionManager(this).savePin(pin)
                     startActivity(Intent(this, DashboardActivity::class.java))
-                    finish()
+                    finishAffinity()
                 }
             }
         }

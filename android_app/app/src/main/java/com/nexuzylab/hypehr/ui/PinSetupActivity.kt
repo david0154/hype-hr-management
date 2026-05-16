@@ -8,32 +8,29 @@ import com.nexuzylab.hypehr.databinding.ActivityPinSetupBinding
 import com.nexuzylab.hypehr.utils.SessionManager
 
 /**
- * Hype HR Management — PIN Setup (first login only)
- * Employee sets a 4–6 digit PIN for quick daily access.
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * PinSetupActivity (ui package) — lets employee create a 4-6 digit PIN.
+ * Developed by David | Nexuzy Lab
  */
 class PinSetupActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPinSetupBinding
-    private lateinit var session: SessionManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPinSetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        session = SessionManager(this)
 
-        binding.btnSavePin.setOnClickListener {
-            val pin  = binding.etPin.text.toString().trim()
-            val pin2 = binding.etPinConfirm.text.toString().trim()
+        binding.btnSetPin.setOnClickListener {
+            val pin     = binding.etNewPin.text.toString().trim()
+            val confirm = binding.etConfirmPin.text.toString().trim()
             when {
                 pin.length < 4 -> Toast.makeText(this, "PIN must be at least 4 digits", Toast.LENGTH_SHORT).show()
-                pin != pin2    -> Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
+                pin != confirm -> Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
                 else -> {
-                    session.savePin(pin)
+                    SessionManager(this).savePin(pin)
                     Toast.makeText(this, "PIN set successfully!", Toast.LENGTH_SHORT).show()
-                    startActivity(Intent(this, DashboardActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK))
+                    startActivity(Intent(this, DashboardActivity::class.java))
+                    finishAffinity()
                 }
             }
         }

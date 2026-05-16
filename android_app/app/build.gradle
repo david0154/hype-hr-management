@@ -30,6 +30,15 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = '17' }
+
+    // Exclude duplicate META-INF files from ZXing + other libs
+    packagingOptions {
+        exclude 'META-INF/DEPENDENCIES'
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/LICENSE.txt'
+        exclude 'META-INF/NOTICE'
+        exclude 'META-INF/NOTICE.txt'
+    }
 }
 
 dependencies {
@@ -50,11 +59,15 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:$camerax_version"
     implementation "androidx.camera:camera-view:$camerax_version"
 
-    // FIX: ListenableFuture for CameraX (resolves 'Cannot access ListenableFuture' errors)
+    // ListenableFuture for CameraX
     implementation 'com.google.guava:guava:32.1.3-android'
 
     // ML Kit — QR scanning
     implementation 'com.google.mlkit:barcode-scanning:17.2.0'
+
+    // ZXing — QR code GENERATION (replaces broken androidmads lib)
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    implementation 'com.google.zxing:core:3.5.3'
 
     // UI
     implementation 'androidx.appcompat:appcompat:1.7.0'
@@ -63,7 +76,7 @@ dependencies {
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     implementation 'androidx.cardview:cardview:1.0.0'
 
-    // FIX: activity-ktx + fragment-ktx for by viewModels() delegate
+    // Activity + Fragment KTX
     implementation 'androidx.activity:activity-ktx:1.9.0'
     implementation 'androidx.fragment:fragment-ktx:1.7.1'
 
@@ -75,9 +88,6 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3'
 
-    // FIX: Gson — required by util/SessionManager.kt
+    // Gson
     implementation 'com.google.code.gson:gson:2.10.1'
-
-    // FIX: QRGenerator — required by IdCardActivity.kt
-    implementation 'com.github.androidmads:QRGenerator:1.0.1'
 }

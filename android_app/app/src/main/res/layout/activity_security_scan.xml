@@ -14,20 +14,46 @@
         app:titleTextColor="@color/white"
         app:title="Scan QR"/>
 
+    <!-- tvInstruction: shown before scanning starts -->
     <TextView
-        android:id="@+id/tvScannedBy"
-        android:layout_width="wrap_content"
+        android:id="@+id/tvInstruction"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text=""
+        android:text="Point camera at employee QR code"
         android:textColor="@color/white"
-        android:textSize="13sp"
+        android:textSize="14sp"
+        android:gravity="center"
         android:padding="8dp"
-        android:background="#80000000"/>
+        android:background="#CC000000"/>
 
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"/>
+
+    <!-- tvStatus: shows scan result at bottom -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Waiting for scan..."
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:padding="12dp"
+        android:background="#CC1A2740"/>
+
+    <!-- tvScannedBy: shows who performed the scan -->
+    <TextView
+        android:id="@+id/tvScannedBy"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#AAFFFFFF"
+        android:textSize="11sp"
+        android:gravity="center"
+        android:padding="4dp"
+        android:background="#80000000"/>
 
 </LinearLayout>

@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/colorBackground">
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="@color/colorPrimary"
+        app:titleTextColor="@color/white"/>
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?attr/progressBarStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone"/>
+
+    <ScrollView
+        android:id="@+id/slipCard"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- Header -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="10dp"
+                app:cardBackgroundColor="@color/colorPrimary"
+                android:layout_marginBottom="12dp">
+                <LinearLayout android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+                    <TextView android:id="@+id/tvCompany"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:textColor="@color/white" android:textSize="11sp" android:alpha="0.8"
+                        android:layout_marginBottom="2dp"/>
+                    <TextView android:id="@+id/tvSlipTitle"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Salary Slip" android:textColor="@color/white"
+                        android:textSize="20sp" android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+                    <TextView android:id="@+id/tvEmpName"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:textColor="@color/white" android:textSize="16sp" android:textStyle="bold"
+                        android:layout_marginBottom="2dp"/>
+                    <TextView android:id="@+id/tvEmpId"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:textColor="@color/white" android:textSize="12sp" android:alpha="0.85"
+                        android:layout_marginBottom="2dp"/>
+                    <TextView android:id="@+id/tvDesig"
+                        android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:textColor="@color/white" android:textSize="12sp" android:alpha="0.8"/>
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- Earnings card -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardCornerRadius="10dp"
+                app:cardBackgroundColor="@color/colorSurface"
+                android:layout_marginBottom="12dp">
+                <LinearLayout android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" android:padding="16dp">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Earnings" android:textSize="13sp" android:textStyle="bold"
+                        android:textColor="@color/colorText" android:layout_marginBottom="8dp"/>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal" android:layout_marginBottom="4dp">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                            android:layout_weight="1" android:text="Gross Salary"
+                            android:textSize="13sp" android:textColor="@color/colorTextMuted"/>
+                        <TextView android:id="@+id/tvGross" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="₹ 0.00"
+                            android:textSize="13sp" android:textStyle="bold" android:textColor="@color/colorSuccess"/>
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal" android:layout_marginBottom="4dp">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                            android:layout_weight="1" android:text="Net Pay"
+                            android:textSize="14sp" android:textStyle="bold" android:textColor="@color/colorText"/>
+                        <TextView android:id="@+id/tvNetPay" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="₹ 0.00"
+                            android:textSize="14sp" android:textStyle="bold" android:textColor="@color/colorPrimary"/>
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal" android:layout_marginBottom="4dp">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                            android:layout_weight="1" android:text="Payment Mode"
+                            android:textSize="12sp" android:textColor="@color/colorTextMuted"/>
+                        <TextView android:id="@+id/tvPayMode" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="CASH"
+                            android:textSize="12sp" android:textColor="@color/colorText"/>
+                    </LinearLayout>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                            android:layout_weight="1" android:text="Generated On"
+                            android:textSize="11sp" android:textColor="@color/colorTextMuted"/>
+                        <TextView android:id="@+id/tvGeneratedOn" android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" android:text="—"
+                            android:textSize="11sp" android:textColor="@color/colorTextMuted"/>
+                    </LinearLayout>
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Action Buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp">
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnBack"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="Back" style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            app:cornerRadius="8dp" android:layout_marginEnd="4dp"/>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShare"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="Share" app:cornerRadius="8dp" android:layout_marginHorizontal="4dp"/>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSave"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="Save" app:cornerRadius="8dp" android:layout_marginHorizontal="4dp"/>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnClose"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="Close" style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            app:cornerRadius="8dp" android:layout_marginStart="4dp"/>
+    </LinearLayout>
+
+</LinearLayout>
