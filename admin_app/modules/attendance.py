@@ -7,7 +7,7 @@ Features:
   - Delete log entry (Super Admin / Admin only)
 FIX: All .where() use FieldFilter keyword arg → no UserWarning.
 FIX: Employee lookup queries by employee_id field (not doc ID = UID).
-FIX: Live emp-ID lookup preview works for mark present/absent.
+FIX: Live emp-ID lookup preview debounced — works for mark present/absent.
 FIX: Raw logs show IST time + parsed location name.
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -95,7 +95,6 @@ def _find_employee_by_id(db, emp_id: str):
         direct = db.collection("employees").document(emp_id).get()
         if direct.exists:
             d = direct.to_dict()
-            # Verify it's actually this employee (not an unrelated UID doc)
             if d.get("employee_id", emp_id) == emp_id:
                 return d.get("uid", emp_id), d
     except Exception:
@@ -125,28 +124,28 @@ class AttendanceModule:
     def _build_ui(self):
         top = tk.Frame(self.parent, bg="#1a2740")
         top.pack(fill="x", pady=(0, 6))
-        tk.Label(top, text="📅 Attendance Management",
+        tk.Label(top, text="\U0001f4c5 Attendance Management",
                  font=("Arial", 14, "bold"), bg="#1a2740", fg="white").pack(side="left", padx=10)
 
         if has_permission(self.role, "attendance"):
-            tk.Button(top, text="✅ Mark Present",
+            tk.Button(top, text="\u2705 Mark Present",
                       bg="#27ae60", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=10, pady=4, cursor="hand2",
                       command=self._mark_present_dialog).pack(side="right", padx=4)
-            tk.Button(top, text="❌ Mark Absent",
+            tk.Button(top, text="\u274c Mark Absent",
                       bg="#c0392b", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=10, pady=4, cursor="hand2",
                       command=self._mark_absent_dialog).pack(side="right", padx=4)
-            tk.Button(top, text="✏️ Edit Session",
+            tk.Button(top, text="\u270f\ufe0f Edit Session",
                       bg="#1e6f9f", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=10, pady=4, cursor="hand2",
                       command=self._edit_selected).pack(side="right", padx=4)
         if self.role in ("super_admin", "admin"):
-            tk.Button(top, text="🗑 Delete",
+            tk.Button(top, text="\U0001f5d1 Delete",
                       bg="#7f1f1f", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=10, pady=4, cursor="hand2",
                       command=self._delete_selected).pack(side="right", padx=4)
-        tk.Button(top, text="🔄 Refresh",
+        tk.Button(top, text="\U0001f504 Refresh",
                   bg="#555", fg="white", font=("Arial", 9),
                   relief="flat", padx=8, pady=4,
                   command=self._load_logs).pack(side="right", padx=4)
@@ -218,17 +217,17 @@ class AttendanceModule:
             dt      = d.get("date", "")
             duty    = d.get("duty_status", d.get("status", ""))
             ot      = d.get("ot_status", "")
-            in_t    = _to_ist_hhmm(d.get("in_time", ""))  if d.get("in_time")  else "—"
-            out_t   = _to_ist_hhmm(d.get("out_time", "")) if d.get("out_time") else "—"
+            in_t    = _to_ist_hhmm(d.get("in_time", ""))  if d.get("in_time")  else "\u2014"
+            out_t   = _to_ist_hhmm(d.get("out_time", "")) if d.get("out_time") else "\u2014"
             hours   = d.get("duty_hours", "")
             loc     = _parse_location(d.get("location", d.get("check_in_location", "")))
             tag     = "present" if duty == "full" else ("half" if duty == "half" else "absent")
             self.tree.insert("", "end", values=(
                 emp_id, name, dt,
-                duty.title() if duty else "—",
-                ot.title()   if ot   else "—",
+                duty.title() if duty else "\u2014",
+                ot.title()   if ot   else "\u2014",
                 in_t, out_t,
-                f"{float(hours):.1f}h" if hours else "—",
+                f"{float(hours):.1f}h" if hours else "\u2014",
                 loc, doc.id,
             ), tags=(tag,))
 
@@ -246,8 +245,8 @@ class AttendanceModule:
     # ------------------------------------------------------------------ MARK PRESENT
     def _mark_present_dialog(self):
         dlg = tk.Toplevel(self.parent)
-        dlg.title("✅ Mark Present")
-        dlg.geometry("400x360")
+        dlg.title("\u2705 Mark Present")
+        dlg.geometry("400x380")
         dlg.configure(bg="#0d1b2a")
         dlg.grab_set()
         dlg.resizable(False, False)
@@ -255,9 +254,9 @@ class AttendanceModule:
         frm = tk.Frame(dlg, bg="#0d1b2a", padx=24, pady=18)
         frm.pack(fill="both", expand=True)
 
-        tk.Label(frm, text="✅ Mark Employee Present",
+        tk.Label(frm, text="\u2705 Mark Employee Present",
                  font=("Arial", 12, "bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
-        tk.Label(frm, text="Type Employee ID then press Tab to validate (e.g. EMP-0001)",
+        tk.Label(frm, text="Type Employee ID then Tab to validate (e.g. EMP-0001)",
                  bg="#0d1b2a", fg="#aaa", font=("Arial", 8)).pack(anchor="w", pady=(2, 10))
 
         def row(label, default=""):
@@ -285,7 +284,7 @@ class AttendanceModule:
         ttk.Combobox(or2, textvariable=v_ot, values=OT_OPTIONS,
                      width=12, state="readonly").pack(side="left")
 
-        # Live name preview — debounced via after()
+        # Live name preview debounced
         name_lbl = tk.Label(frm, text="", bg="#0d1b2a", fg="#27ae60", font=("Arial", 9, "bold"))
         name_lbl.pack(anchor="w", pady=(4, 0))
         _lookup_job = [None]
@@ -297,11 +296,11 @@ class AttendanceModule:
             _, emp = _find_employee_by_id(self.db, eid)
             if emp:
                 name_lbl.config(
-                    text=f"✅ {emp.get('name', '')} | {emp.get('designation', '')}",
+                    text=f"\u2705 {emp.get('name', '')} | {emp.get('designation', '')}",
                     fg="#27ae60"
                 )
             else:
-                name_lbl.config(text="❌ Employee not found", fg="#e74c3c")
+                name_lbl.config(text="\u274c Employee not found", fg="#e74c3c")
 
         def _schedule_lookup(*_):
             if _lookup_job[0]:
@@ -312,4 +311,223 @@ class AttendanceModule:
         v_emp.trace_add("write", _schedule_lookup)
 
         def _save():
-            eid   = v_emp.get()
+            eid   = v_emp.get().strip().upper()
+            dt    = v_date.get().strip()
+            in_t  = v_in.get().strip()
+            out_t = v_out.get().strip()
+            duty  = v_duty.get()
+            ot    = v_ot.get()
+            if not eid or not dt:
+                messagebox.showerror("Error", "Employee ID and Date are required.", parent=dlg)
+                return
+            uid, emp = _find_employee_by_id(self.db, eid)
+            if not emp:
+                messagebox.showerror("Not Found",
+                    f"No employee found with ID: {eid}", parent=dlg)
+                return
+            duty_hours = 0.0
+            try:
+                if in_t and out_t:
+                    fmt  = "%H:%M"
+                    t_in  = datetime.strptime(in_t,  fmt)
+                    t_out = datetime.strptime(out_t, fmt)
+                    diff  = (t_out - t_in).seconds / 3600
+                    duty_hours = round(diff, 2)
+            except Exception:
+                pass
+
+            doc_id = f"{eid}_{dt}"
+            session_data = {
+                "employee_id":   eid,
+                "employee_name": emp.get("name", ""),
+                "date":          dt,
+                "duty_status":   duty,
+                "ot_status":     ot,
+                "in_time":       in_t,
+                "out_time":      out_t,
+                "duty_hours":    duty_hours,
+                "marked_by":     self.current_user.get("employee_id", "admin"),
+                "marked_at":     datetime.now(IST).isoformat(),
+                "source":        "manual",
+            }
+            try:
+                self.db.collection("sessions").document(doc_id).set(session_data)
+                messagebox.showinfo("\u2705 Saved",
+                    f"{emp.get('name', eid)} marked {duty.upper()} on {dt}.", parent=dlg)
+                dlg.destroy()
+                self._load_logs()
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex), parent=dlg)
+
+        tk.Button(frm, text="\u2705 Save", command=_save,
+                  bg="#27ae60", fg="white", font=("Arial", 10, "bold"),
+                  relief="flat", padx=14, pady=5).pack(anchor="w", pady=(10, 0))
+
+    # ------------------------------------------------------------------ MARK ABSENT
+    def _mark_absent_dialog(self):
+        dlg = tk.Toplevel(self.parent)
+        dlg.title("\u274c Mark Absent")
+        dlg.geometry("380x260")
+        dlg.configure(bg="#0d1b2a")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frm = tk.Frame(dlg, bg="#0d1b2a", padx=24, pady=18)
+        frm.pack(fill="both", expand=True)
+
+        tk.Label(frm, text="\u274c Mark Employee Absent",
+                 font=("Arial", 12, "bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
+        tk.Label(frm, text="Type Employee ID then Tab to validate (e.g. EMP-0001)",
+                 bg="#0d1b2a", fg="#aaa", font=("Arial", 8)).pack(anchor="w", pady=(2, 10))
+
+        def row(label, default=""):
+            r = tk.Frame(frm, bg="#0d1b2a"); r.pack(fill="x", pady=4)
+            tk.Label(r, text=label, width=18, anchor="w", bg="#0d1b2a", fg="#ccc").pack(side="left")
+            v = tk.StringVar(value=default)
+            tk.Entry(r, textvariable=v, bg="#1e3a5f", fg="white",
+                     insertbackground="white", relief="flat", bd=4, width=20).pack(side="left")
+            return v
+
+        v_emp  = row("Employee ID:")
+        v_date = row("Date (YYYY-MM-DD):", str(date.today()))
+
+        name_lbl = tk.Label(frm, text="", bg="#0d1b2a", fg="#27ae60", font=("Arial", 9, "bold"))
+        name_lbl.pack(anchor="w")
+        _lookup_job = [None]
+
+        def _do_lookup():
+            eid = v_emp.get().strip().upper()
+            if not eid:
+                name_lbl.config(text=""); return
+            _, emp = _find_employee_by_id(self.db, eid)
+            if emp:
+                name_lbl.config(text=f"\u2705 {emp.get('name', '')}", fg="#27ae60")
+            else:
+                name_lbl.config(text="\u274c Employee not found", fg="#e74c3c")
+
+        def _schedule_lookup(*_):
+            if _lookup_job[0]:
+                try: dlg.after_cancel(_lookup_job[0])
+                except Exception: pass
+            _lookup_job[0] = dlg.after(400, _do_lookup)
+
+        v_emp.trace_add("write", _schedule_lookup)
+
+        def _save():
+            eid = v_emp.get().strip().upper()
+            dt  = v_date.get().strip()
+            if not eid or not dt:
+                messagebox.showerror("Error", "Employee ID and Date are required.", parent=dlg)
+                return
+            uid, emp = _find_employee_by_id(self.db, eid)
+            if not emp:
+                messagebox.showerror("Not Found",
+                    f"No employee found with ID: {eid}", parent=dlg)
+                return
+            doc_id = f"{eid}_{dt}"
+            session_data = {
+                "employee_id":   eid,
+                "employee_name": emp.get("name", ""),
+                "date":          dt,
+                "duty_status":   "absent",
+                "ot_status":     "none",
+                "in_time":       "",
+                "out_time":      "",
+                "duty_hours":    0.0,
+                "marked_by":     self.current_user.get("employee_id", "admin"),
+                "marked_at":     datetime.now(IST).isoformat(),
+                "source":        "manual",
+            }
+            try:
+                self.db.collection("sessions").document(doc_id).set(session_data)
+                messagebox.showinfo("\u2705 Saved",
+                    f"{emp.get('name', eid)} marked ABSENT on {dt}.", parent=dlg)
+                dlg.destroy()
+                self._load_logs()
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex), parent=dlg)
+
+        tk.Button(frm, text="\u274c Save Absent", command=_save,
+                  bg="#c0392b", fg="white", font=("Arial", 10, "bold"),
+                  relief="flat", padx=14, pady=5).pack(anchor="w", pady=(10, 0))
+
+    # ------------------------------------------------------------------ EDIT
+    def _edit_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Select", "Select a session row to edit."); return
+        vals   = self.tree.item(sel[0])["values"]
+        doc_id = vals[9] if len(vals) > 9 else ""
+        emp_id = vals[0]
+        dt     = vals[2]
+        duty   = vals[3].lower() if vals[3] else "absent"
+        ot     = vals[4].lower() if vals[4] else "none"
+
+        dlg = tk.Toplevel(self.parent)
+        dlg.title(f"\u270f\ufe0f Edit Session \u2014 {emp_id} / {dt}")
+        dlg.geometry("340x220")
+        dlg.configure(bg="#0d1b2a")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frm = tk.Frame(dlg, bg="#0d1b2a", padx=24, pady=16)
+        frm.pack(fill="both", expand=True)
+        tk.Label(frm, text=f"Employee: {emp_id}  |  Date: {dt}",
+                 bg="#0d1b2a", fg="#f0c040", font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 10))
+
+        dr = tk.Frame(frm, bg="#0d1b2a"); dr.pack(fill="x", pady=4)
+        tk.Label(dr, text="Duty Status:", width=14, anchor="w", bg="#0d1b2a", fg="#ccc").pack(side="left")
+        v_duty = tk.StringVar(value=duty if duty in DUTY_OPTIONS else "absent")
+        ttk.Combobox(dr, textvariable=v_duty, values=DUTY_OPTIONS,
+                     width=12, state="readonly").pack(side="left")
+
+        or2 = tk.Frame(frm, bg="#0d1b2a"); or2.pack(fill="x", pady=4)
+        tk.Label(or2, text="OT Status:", width=14, anchor="w", bg="#0d1b2a", fg="#ccc").pack(side="left")
+        v_ot = tk.StringVar(value=ot if ot in OT_OPTIONS else "none")
+        ttk.Combobox(or2, textvariable=v_ot, values=OT_OPTIONS,
+                     width=12, state="readonly").pack(side="left")
+
+        def _save():
+            if not doc_id:
+                messagebox.showerror("Error", "Cannot edit: doc ID missing.", parent=dlg)
+                return
+            try:
+                self.db.collection("sessions").document(doc_id).update({
+                    "duty_status": v_duty.get(),
+                    "ot_status":   v_ot.get(),
+                    "edited_by":   self.current_user.get("employee_id", "admin"),
+                    "edited_at":   datetime.now(IST).isoformat(),
+                })
+                messagebox.showinfo("\u2705 Updated", "Session updated.", parent=dlg)
+                dlg.destroy()
+                self._apply_filter()
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex), parent=dlg)
+
+        tk.Button(frm, text="\u2714 Save", command=_save,
+                  bg="#1e6f9f", fg="white", font=("Arial", 10, "bold"),
+                  relief="flat", padx=14, pady=5).pack(anchor="w", pady=(14, 0))
+
+    # ------------------------------------------------------------------ DELETE
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Select", "Select a session row to delete."); return
+        vals   = self.tree.item(sel[0])["values"]
+        doc_id = vals[9] if len(vals) > 9 else ""
+        emp_id = vals[0]
+        dt     = vals[2]
+        if not doc_id:
+            messagebox.showerror("Error", "Cannot delete: doc ID missing."); return
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete session for {emp_id} on {dt}?",
+            icon="warning"
+        ):
+            return
+        try:
+            self.db.collection("sessions").document(doc_id).delete()
+            messagebox.showinfo("\u2705 Deleted", f"Session deleted: {emp_id} / {dt}")
+            self._apply_filter()
+        except Exception as ex:
+            messagebox.showerror("Error", str(ex))
