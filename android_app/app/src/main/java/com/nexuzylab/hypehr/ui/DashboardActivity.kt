@@ -7,6 +7,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.DiskCacheStrategy
+import com.google.firebase.auth.FirebaseAuth
 import com.nexuzylab.hypehr.R
 import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.databinding.ActivityDashboardBinding
@@ -19,11 +20,9 @@ import java.util.TimeZone
 
 /**
  * DashboardActivity — Employee-facing home screen.
- * FIX: loadStats() was passing uid to getAttendanceStats() which reads from
- *      employees/{uid}/attendance_summary — BUT the summary is written by admin_app
- *      using employee_id (EMP-0001), not uid. So stats were always 0.
- *      Fix: compute present/absent counts live from sessions collection using employee_id.
- * FIX: Added ID Card button and Logout button that were missing from setupButtons().
+ * FIX: btnIdCard and btnLogout added to layout XML.
+ * FIX: loadStats reads from sessions collection via getAttendanceHistory()
+ *      instead of the never-written attendance_summary subcollection.
  * Developed by David | Nexuzy Lab
  */
 class DashboardActivity : AppCompatActivity() {
@@ -81,11 +80,6 @@ class DashboardActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * FIX: Old code read from employees/{uid}/attendance_summary which is never populated
-     * by the current admin_app. Instead, compute stats live from the "sessions" collection
-     * which IS written by admin_app, keyed by employee_id.
-     */
     private fun loadStats() {
         binding.progressDash.visibility = View.VISIBLE
         val empId = session.getEmployeeId()
@@ -99,31 +93,26 @@ class DashboardActivity : AppCompatActivity() {
                 employeeId = empId,
                 monthKey   = monthKey
             )
-
-            // Count unique dates where IN exists
-            val presentDates = history
+            val presentDays = history
                 .filter { (it["type"] as? String)?.uppercase() == "IN" }
                 .mapNotNull { it["date"] as? String }
-                .toSet()
-
-            val present  = presentDates.size
-            val otSessions = history.count { (it["type"] as? String)?.uppercase() == "OT_IN"
-                    || (it["action"] as? String)?.uppercase() == "OT_IN" }
-
-            // Today status
+                .toSet().size
+            val otSessions = history.count {
+                (it["type"] as? String)?.uppercase() == "OT_IN"
+                    || (it["action"] as? String)?.uppercase() == "OT_IN"
+            }
             val todayStatus = FirestoreRepository.getTodayAttendanceStatus(empId)
             val todayLabel = when (todayStatus) {
-                "IN"       -> "✅ Checked In"
-                "COMPLETE" -> "✅ Shift Complete"
-                "OT_IN"    -> "⏱ OT In Progress"
-                else       -> "❌ Not Marked"
+                "IN"       -> "\u2705 Checked In"
+                "COMPLETE" -> "\u2705 Shift Complete"
+                "OT_IN"    -> "\u23f1 OT In Progress"
+                else       -> "\u274c Not Marked"
             }
-
             runOnUiThread {
                 binding.progressDash.visibility = View.GONE
-                binding.tvPresent.text     = present.toString()
-                binding.tvAbsent.text      = "—"        // absent = admin-side calc only
-                binding.tvHalfDays.text    = "—"
+                binding.tvPresent.text     = presentDays.toString()
+                binding.tvAbsent.text      = "\u2014"
+                binding.tvHalfDays.text    = "\u2014"
                 binding.tvOtHours.text     = otSessions.toString()
                 binding.tvTodayStatus.text = todayLabel
             }
@@ -140,15 +129,13 @@ class DashboardActivity : AppCompatActivity() {
         binding.btnHistory.setOnClickListener {
             startActivity(Intent(this, AttendanceHistoryActivity::class.java))
         }
-        // FIX: ID Card button was wired up but never navigated anywhere
         binding.btnIdCard.setOnClickListener {
             val intent = Intent(this, IdCardActivity::class.java)
             intent.putExtra("employee_id", session.getEmployeeUid())
             startActivity(intent)
         }
-        // FIX: Logout button was missing from setupButtons entirely
         binding.btnLogout.setOnClickListener {
-            com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+            FirebaseAuth.getInstance().signOut()
             session.clearSession()
             startActivity(Intent(this, LoginActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
