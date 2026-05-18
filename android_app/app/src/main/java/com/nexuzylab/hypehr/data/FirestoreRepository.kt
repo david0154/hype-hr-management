@@ -18,10 +18,25 @@ object FirestoreRepository {
 
     // ── Employee ───────────────────────────────────────────────────────
 
+    /**
+     * Fetches employee doc by Firebase Auth UID.
+     * Strategy 1: direct document lookup employees/{uid}  (UID-keyed collections)
+     * Strategy 2: query where uid field == uid            (empId-keyed collections)
+     * This handles both Firestore setups.
+     */
     suspend fun getEmployeeByUid(uid: String): Map<String, Any>? {
+        if (uid.isEmpty()) return null
         return try {
-            val doc = db.collection("employees").document(uid).get().await()
-            if (doc.exists()) doc.data else null
+            // Strategy 1 — direct doc lookup (fastest)
+            val direct = db.collection("employees").document(uid).get().await()
+            if (direct.exists()) return direct.data
+
+            // Strategy 2 — collection stored by employee_id, uid saved as field
+            val snap = db.collection("employees")
+                .whereEqualTo("uid", uid)
+                .limit(1)
+                .get().await()
+            snap.documents.firstOrNull()?.data
         } catch (e: Exception) { null }
     }
 
@@ -29,48 +44,62 @@ object FirestoreRepository {
 
     /**
      * Returns today's attendance state for an employee:
-     *   - "NONE"     → not checked in yet today
-     *   - "IN"       → checked in, not yet checked out
-     *   - "COMPLETE" → both IN and OUT done today
+     *   "NONE"     - not checked in yet today
+     *   "IN"       - checked in, not yet checked out
+     *   "COMPLETE" - regular IN + OUT both done today
+     *   "OT_IN"    - overtime session started (scanned after COMPLETE)
      *
-     * Logic: queries attendance_logs for today, finds last IN and last OUT.
-     * If last action is IN (no OUT after it) → "IN".
-     * If last action is OUT → "COMPLETE".
-     * If no records today → "NONE".
+     * Reads attendance_logs without orderBy to avoid composite index requirement.
+     * Sorts locally by timestamp.
      */
     suspend fun getTodayAttendanceStatus(employeeId: String): String {
+        if (employeeId.isEmpty()) return "NONE"
         return try {
             val today = todayDateKey()
+            // No orderBy → no composite index needed on Firestore
             val snap = db.collection("attendance_logs")
                 .whereEqualTo("employee_id", employeeId)
                 .whereEqualTo("date", today)
-                .orderBy("timestamp", Query.Direction.ASCENDING)
                 .get().await()
 
-            val logs = snap.documents.mapNotNull { it.data }
+            val logs = snap.documents
+                .mapNotNull { it.data }
+                .sortedBy { log ->
+                    (log["timestamp"] as? Timestamp)?.seconds ?: 0L
+                }
+
             if (logs.isEmpty()) return "NONE"
 
-            // Walk logs in order; track last action
+            // Walk in time order, track last action
             var lastAction = ""
             for (log in logs) {
-                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase() ?: continue
-                if (action == "IN" || action == "OUT") lastAction = action
+                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase()?.trim()
+                    ?: continue
+                when (action) {
+                    "IN", "OUT", "OT_IN", "OT_OUT" -> lastAction = action
+                }
             }
 
             when (lastAction) {
-                "IN"  -> "IN"        // checked in, waiting for OUT
-                "OUT" -> "COMPLETE"  // full day done
-                else  -> "NONE"
+                "IN"     -> "IN"        // regular shift started
+                "OUT"    -> "COMPLETE"  // regular shift done
+                "OT_IN"  -> "OT_IN"    // OT session started
+                "OT_OUT" -> "COMPLETE"  // OT done → treat as COMPLETE again
+                else     -> "NONE"
             }
         } catch (e: Exception) { "NONE" }
     }
 
-    // ── Attendance Stats ─────────────────────────────────────────────
+    // ── Attendance Stats ──────────────────────────────────────────────
 
-    suspend fun getAttendanceStats(employeeId: String): Map<String, Any>? {
+    /**
+     * Pass Firebase Auth UID — attendance_summary lives under employees/{uid}
+     */
+    suspend fun getAttendanceStats(uid: String): Map<String, Any>? {
+        if (uid.isEmpty()) return emptyMap()
         return try {
             val snap = db.collection("employees")
-                .document(employeeId)
+                .document(uid)
                 .collection("attendance_summary")
                 .document(currentMonthKey())
                 .get().await()
@@ -87,15 +116,26 @@ object FirestoreRepository {
                 .whereEqualTo("employee_id", employeeId)
                 .whereGreaterThanOrEqualTo("date", "$monthKey-01")
                 .whereLessThanOrEqualTo("date", "$monthKey-31")
-                .orderBy("date", Query.Direction.DESCENDING)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
                 .get().await()
-            snap.documents.mapNotNull { it.data }
+            snap.documents
+                .mapNotNull { it.data }
+                .sortedByDescending { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
         } catch (e: Exception) { emptyList() }
     }
 
+    /**
+     * Logs attendance entry to attendance_logs.
+     * Also updates attendance_summary subcollection under employees/{uid}.
+     *
+     * @param empId      employee_id code e.g. "EMP-0001" — stored in log doc
+     * @param uid        Firebase Auth UID — used for attendance_summary path
+     * @param action     "IN" | "OUT" | "OT_IN" | "OT_OUT"
+     * @param location   scanned QR location string
+     * @param empName    employee display name
+     */
     suspend fun logAttendance(
         empId: String = "",
+        uid: String = "",
         action: String = "IN",
         location: String = "",
         empName: String = "",
@@ -104,14 +144,16 @@ object FirestoreRepository {
         type: String = action
     ): Boolean {
         val resolvedEmpId     = employeeId.ifEmpty { empId }
+        val resolvedUid       = uid.ifEmpty { resolvedEmpId } // fallback: use empId if uid missing
         val resolvedScannedBy = scannedBy.ifEmpty { empName }
-        val resolvedType      = type.ifEmpty { action }.ifEmpty { "IN" }
+        val resolvedType      = type.ifEmpty { action }.ifEmpty { "IN" }.uppercase()
         if (resolvedEmpId.isEmpty()) return false
 
         return try {
             val today = todayDateKey()
             val logData = mapOf(
                 "employee_id" to resolvedEmpId,
+                "uid"         to resolvedUid,
                 "scanned_by"  to resolvedScannedBy,
                 "type"        to resolvedType,
                 "action"      to resolvedType,
@@ -122,18 +164,35 @@ object FirestoreRepository {
             )
             db.collection("attendance_logs").add(logData).await()
 
+            // Update summary under employees/{UID} — correct path
             val summaryRef = db.collection("employees")
-                .document(resolvedEmpId)
+                .document(resolvedUid)
                 .collection("attendance_summary")
                 .document(currentMonthKey())
+
             db.runTransaction { tx ->
-                val snap    = tx.get(summaryRef)
-                val present = snap.getLong("present") ?: 0L
-                tx.set(
-                    summaryRef,
-                    mapOf("present" to present + 1, "last_updated" to Timestamp.now()),
-                    SetOptions.merge()
-                )
+                val snap = tx.get(summaryRef)
+                when (resolvedType) {
+                    "IN" -> {
+                        val present = snap.getLong("present") ?: 0L
+                        tx.set(summaryRef,
+                            mapOf("present" to present + 1, "last_updated" to Timestamp.now()),
+                            SetOptions.merge())
+                    }
+                    "OT_IN" -> {
+                        // OT session started — will calculate hours on OT_OUT
+                        tx.set(summaryRef,
+                            mapOf("last_updated" to Timestamp.now()),
+                            SetOptions.merge())
+                    }
+                    "OT_OUT" -> {
+                        val otCount = snap.getLong("ot_sessions") ?: 0L
+                        tx.set(summaryRef,
+                            mapOf("ot_sessions" to otCount + 1, "last_updated" to Timestamp.now()),
+                            SetOptions.merge())
+                    }
+                    else -> { /* OUT — no summary change needed */ }
+                }
             }.await()
             true
         } catch (e: Exception) { false }
@@ -152,7 +211,7 @@ object FirestoreRepository {
                 .whereEqualTo("password", password)
                 .limit(1)
                 .get().await()
-            val doc = snap.documents.firstOrNull() ?: return null
+            val doc  = snap.documents.firstOrNull() ?: return null
             val data = doc.data ?: return null
             val role = (data["role"] as? String)?.lowercase() ?: ""
             if (role in allowedRoles) data else null
@@ -197,9 +256,10 @@ object FirestoreRepository {
         return try {
             val snap = db.collection("attendance_logs")
                 .whereEqualTo("date", date)
-                .orderBy("timestamp", Query.Direction.ASCENDING)
                 .get().await()
-            snap.documents.mapNotNull { it.data }
+            snap.documents
+                .mapNotNull { it.data }
+                .sortedBy { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
         } catch (e: Exception) { emptyList() }
     }
 

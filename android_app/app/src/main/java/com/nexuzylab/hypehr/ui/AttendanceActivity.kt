@@ -26,7 +26,15 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * AttendanceActivity — Smart QR attendance
+ * AttendanceActivity — Smart QR attendance with OT support
+ *
+ * State machine per day:
+ *   NONE     → scan QR → show CHECK IN
+ *   IN       → scan QR → show CHECK OUT
+ *   COMPLETE → scan QR → show OT CHECK IN
+ *   OT_IN    → scan QR → show OT CHECK OUT
+ *   OT_OUT / COMPLETE again → scan QR → show OT CHECK IN again (multiple OT cycles)
+ *
  * Developed by David | Nexuzy Lab
  */
 class AttendanceActivity : AppCompatActivity() {
@@ -37,7 +45,7 @@ class AttendanceActivity : AppCompatActivity() {
     private var scannedLocation: String? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var scanningActive = false
-    private var todayStatus = "NONE"
+    private var todayStatus = "NONE"  // NONE | IN | COMPLETE | OT_IN
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -121,7 +129,6 @@ class AttendanceActivity : AppCompatActivity() {
                 .build()
             val scanner = BarcodeScanning.getClient(options)
 
-            // Use ResolutionSelector instead of deprecated setTargetResolution
             val resSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionStrategy(
                     androidx.camera.core.resolutionselector.ResolutionStrategy(
@@ -183,6 +190,15 @@ class AttendanceActivity : AppCompatActivity() {
             .addOnFailureListener { imageProxy.close() }
     }
 
+    /**
+     * Fetches today's status from Firestore then shows the correct button.
+     *
+     * State machine:
+     *   NONE     → show CHECK IN button
+     *   IN       → show CHECK OUT button
+     *   COMPLETE → show OT CHECK IN button (+ message that regular shift is done)
+     *   OT_IN    → show OT CHECK OUT button
+     */
     private fun checkTodayStatusAndShowButton(location: String) {
         lifecycleScope.launch {
             val empId = session.getEmployeeId()
@@ -191,22 +207,39 @@ class AttendanceActivity : AppCompatActivity() {
                 when (todayStatus) {
                     "NONE" -> {
                         binding.tvStatus.text = "✅ Location: $location\nTap CHECK IN to start your shift"
+                        binding.btnIn.text        = "✅ CHECK IN"
                         binding.btnIn.visibility  = View.VISIBLE
                         binding.btnOut.visibility = View.GONE
                         binding.btnIn.isEnabled   = true
                         binding.btnScanQr.visibility = View.GONE
                     }
                     "IN" -> {
-                        binding.tvStatus.text = "🟡 Checked IN at $location\nTap CHECK OUT to end your shift"
+                        binding.tvStatus.text = "🟡 You are checked IN at $location\nTap CHECK OUT to end your shift"
                         binding.btnIn.visibility  = View.GONE
+                        binding.btnOut.text        = "🚪 CHECK OUT"
                         binding.btnOut.visibility = View.VISIBLE
                         binding.btnOut.isEnabled  = true
                         binding.btnScanQr.visibility = View.GONE
                     }
                     "COMPLETE" -> {
-                        binding.tvStatus.text = "🌟 Attendance complete for today!"
-                        binding.btnIn.visibility  = View.GONE
+                        // Regular shift done — offer OT check-in
+                        binding.tvStatus.text = "🌟 Regular shift complete!\nTap OT CHECK IN if you are working overtime"
+                        binding.btnIn.text        = "⏱ OT CHECK IN"
+                        binding.btnIn.visibility  = View.VISIBLE
                         binding.btnOut.visibility = View.GONE
+                        binding.btnIn.isEnabled   = true
+                        binding.btnScanQr.visibility = View.GONE
+                    }
+                    "OT_IN" -> {
+                        binding.tvStatus.text = "⏱ OT in progress at $location\nTap OT CHECK OUT to end overtime"
+                        binding.btnIn.visibility  = View.GONE
+                        binding.btnOut.text        = "⏹ OT CHECK OUT"
+                        binding.btnOut.visibility = View.VISIBLE
+                        binding.btnOut.isEnabled  = true
+                        binding.btnScanQr.visibility = View.GONE
+                    }
+                    else -> {
+                        binding.tvStatus.text = "⚠️ Unable to fetch status. Try scanning again."
                         binding.btnScanQr.visibility = View.VISIBLE
                         binding.btnScanQr.text = "🔄 Scan Again"
                     }
@@ -215,41 +248,86 @@ class AttendanceActivity : AppCompatActivity() {
         }
     }
 
-    private fun markAttendance(action: String) {
+    /**
+     * Maps button action to correct Firestore action string.
+     * btnIn  → "IN"    when status NONE
+     *       → "OT_IN" when status COMPLETE
+     * btnOut → "OUT"   when status IN
+     *       → "OT_OUT" when status OT_IN
+     */
+    private fun markAttendance(buttonAction: String) {
         val location = scannedLocation ?: return
         binding.btnIn.isEnabled  = false
         binding.btnOut.isEnabled = false
-        binding.tvStatus.text = "Saving…"
+        binding.tvStatus.text    = "Saving…"
+
+        // Resolve actual Firestore action based on current state
+        val firestoreAction = when {
+            buttonAction == "IN"  && todayStatus == "COMPLETE" -> "OT_IN"
+            buttonAction == "OUT" && todayStatus == "OT_IN"    -> "OT_OUT"
+            else -> buttonAction  // IN or OUT
+        }
 
         lifecycleScope.launch {
             val ok = FirestoreRepository.logAttendance(
                 empId    = session.getEmployeeId(),
-                action   = action,
+                uid      = session.getEmployeeUid(),
+                action   = firestoreAction,
                 location = location,
                 empName  = session.getEmployeeName()
             )
             runOnUiThread {
                 if (ok) {
-                    todayStatus = if (action == "IN") "IN" else "COMPLETE"
-                    if (action == "IN") {
-                        binding.tvStatus.text = "✅ Checked IN at $location\nTap CHECK OUT when you leave"
-                        binding.btnIn.visibility  = View.GONE
-                        binding.btnOut.visibility = View.VISIBLE
-                        binding.btnOut.isEnabled  = true
-                        binding.btnScanQr.visibility = View.GONE
-                    } else {
-                        binding.tvStatus.text = "🌟 Attendance complete! Have a great day, ${session.getEmployeeName()}!"
-                        binding.btnIn.visibility  = View.GONE
-                        binding.btnOut.visibility = View.GONE
-                        binding.btnScanQr.visibility = View.VISIBLE
-                        binding.btnScanQr.text = "🔄 Scan Again"
+                    when (firestoreAction) {
+                        "IN" -> {
+                            todayStatus = "IN"
+                            binding.tvStatus.text = "✅ Checked IN at $location\nTap CHECK OUT when you leave"
+                            binding.btnIn.visibility  = View.GONE
+                            binding.btnOut.text        = "🚪 CHECK OUT"
+                            binding.btnOut.visibility = View.VISIBLE
+                            binding.btnOut.isEnabled  = true
+                            binding.btnScanQr.visibility = View.GONE
+                        }
+                        "OUT" -> {
+                            todayStatus = "COMPLETE"
+                            binding.tvStatus.text = "🌟 Shift complete! Great work, ${session.getEmployeeName()}!\nScan again if you need to log OT"
+                            binding.btnIn.text        = "⏱ OT CHECK IN"
+                            binding.btnIn.visibility  = View.VISIBLE
+                            binding.btnIn.isEnabled   = true
+                            binding.btnOut.visibility = View.GONE
+                            binding.btnScanQr.visibility = View.GONE
+                        }
+                        "OT_IN" -> {
+                            todayStatus = "OT_IN"
+                            binding.tvStatus.text = "⏱ OT started at $location\nTap OT CHECK OUT when done"
+                            binding.btnIn.visibility  = View.GONE
+                            binding.btnOut.text        = "⏹ OT CHECK OUT"
+                            binding.btnOut.visibility = View.VISIBLE
+                            binding.btnOut.isEnabled  = true
+                            binding.btnScanQr.visibility = View.GONE
+                        }
+                        "OT_OUT" -> {
+                            todayStatus = "COMPLETE"
+                            binding.tvStatus.text = "✅ OT complete! Scan again for another OT session if needed."
+                            binding.btnIn.text        = "⏱ OT CHECK IN"
+                            binding.btnIn.visibility  = View.VISIBLE
+                            binding.btnIn.isEnabled   = true
+                            binding.btnOut.visibility = View.GONE
+                            binding.btnScanQr.visibility = View.GONE
+                        }
                     }
                     Toast.makeText(this@AttendanceActivity,
-                        if (action == "IN") "Checked IN" else "Checked OUT", Toast.LENGTH_SHORT).show()
+                        when (firestoreAction) {
+                            "IN"     -> "Checked IN successfully"
+                            "OUT"    -> "Checked OUT successfully"
+                            "OT_IN"  -> "OT session started"
+                            "OT_OUT" -> "OT session ended"
+                            else     -> "Saved"
+                        }, Toast.LENGTH_SHORT).show()
                 } else {
-                    binding.tvStatus.text = "⚠️ Save failed. Check internet."
-                    if (action == "IN") binding.btnIn.isEnabled = true
-                    else binding.btnOut.isEnabled = true
+                    binding.tvStatus.text = "⚠️ Save failed. Check internet and try again."
+                    binding.btnIn.isEnabled  = true
+                    binding.btnOut.isEnabled = true
                 }
             }
         }
