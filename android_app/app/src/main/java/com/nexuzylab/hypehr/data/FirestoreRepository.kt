@@ -16,12 +16,8 @@ object FirestoreRepository {
 
     private val db = FirebaseFirestore.getInstance()
 
-    // ── Employee ──────────────────────────────────────────────────────────────
+    // ── Employee ───────────────────────────────────────────────────────
 
-    /**
-     * Fetches an employee document by Firebase Auth UID.
-     * Document ID = UID (set during employee creation).
-     */
     suspend fun getEmployeeByUid(uid: String): Map<String, Any>? {
         return try {
             val doc = db.collection("employees").document(uid).get().await()
@@ -29,7 +25,47 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
-    // ── Attendance Stats ──────────────────────────────────────────────────────
+    // ── Attendance Status ─────────────────────────────────────────────
+
+    /**
+     * Returns today's attendance state for an employee:
+     *   - "NONE"     → not checked in yet today
+     *   - "IN"       → checked in, not yet checked out
+     *   - "COMPLETE" → both IN and OUT done today
+     *
+     * Logic: queries attendance_logs for today, finds last IN and last OUT.
+     * If last action is IN (no OUT after it) → "IN".
+     * If last action is OUT → "COMPLETE".
+     * If no records today → "NONE".
+     */
+    suspend fun getTodayAttendanceStatus(employeeId: String): String {
+        return try {
+            val today = todayDateKey()
+            val snap = db.collection("attendance_logs")
+                .whereEqualTo("employee_id", employeeId)
+                .whereEqualTo("date", today)
+                .orderBy("timestamp", Query.Direction.ASCENDING)
+                .get().await()
+
+            val logs = snap.documents.mapNotNull { it.data }
+            if (logs.isEmpty()) return "NONE"
+
+            // Walk logs in order; track last action
+            var lastAction = ""
+            for (log in logs) {
+                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase() ?: continue
+                if (action == "IN" || action == "OUT") lastAction = action
+            }
+
+            when (lastAction) {
+                "IN"  -> "IN"        // checked in, waiting for OUT
+                "OUT" -> "COMPLETE"  // full day done
+                else  -> "NONE"
+            }
+        } catch (e: Exception) { "NONE" }
+    }
+
+    // ── Attendance Stats ─────────────────────────────────────────────
 
     suspend fun getAttendanceStats(employeeId: String): Map<String, Any>? {
         return try {
@@ -103,7 +139,7 @@ object FirestoreRepository {
         } catch (e: Exception) { false }
     }
 
-    // ── Management / Security Users ───────────────────────────────────────────
+    // ── Management / Security Users ───────────────────────────────────────
 
     suspend fun getManagementUser(
         username: String,
@@ -123,7 +159,7 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
-    // ── Salary ────────────────────────────────────────────────────────────────
+    // ── Salary ───────────────────────────────────────────────────────────────
 
     suspend fun getSalaryList(employeeId: String): List<Map<String, Any>> {
         return try {
@@ -149,7 +185,7 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
-    // ── Admin ─────────────────────────────────────────────────────────────────
+    // ── Admin ───────────────────────────────────────────────────────────────
 
     suspend fun getAllEmployees(): List<Map<String, Any>> {
         return try {
@@ -169,7 +205,7 @@ object FirestoreRepository {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private fun currentMonthKey(): String {
+    fun currentMonthKey(): String {
         val cal = Calendar.getInstance()
         return "%04d-%02d".format(
             cal.get(Calendar.YEAR),
@@ -177,6 +213,6 @@ object FirestoreRepository {
         )
     }
 
-    private fun todayDateKey(): String =
+    fun todayDateKey(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
 }
