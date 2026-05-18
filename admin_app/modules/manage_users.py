@@ -1,15 +1,17 @@
 """
 Manage Admin, Security & Supervisor Users — Hype HR Management
 
-FIX v2:
-  1. Added Email field — required for Security/Supervisor Android login.
-  2. Added Employee ID field — used for ID card generation + QR.
-  3. On Save, writes BOTH admin_users doc (Python app login) AND
-     employees doc (Android Firebase Auth lookup) in Firestore.
-  4. company_name auto-read from settings/company and stored in both docs
-     so ID card and Android dashboard show it correctly.
-  5. supervisor role added with proper hint + permissions.
-  6. After save, shows popup with Android login credentials (email + password).
+FIX v3:
+  1. Automatically creates Firebase Auth account for Security/Supervisor/Manager/HR
+     roles using firebase_admin SDK — no more manual Console step.
+  2. Employees doc is now saved with Firebase Auth UID as the document key
+     (same pattern as employees.py) so LoginActivity.resolveUser() finds it correctly.
+  3. password_hash and display_name written to employees doc so SHA-256
+     fallback auth in Android LoginActivity works.
+  4. If Firebase Auth account already exists, reuses its UID.
+  5. Password reset also updates Firebase Auth account.
+  6. If firebase_admin is unavailable, falls back to hash-only mode
+     (Android login still works via SHA-256 fallback added in LoginActivity).
 
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -19,12 +21,52 @@ from utils.firebase_config import get_db
 from modules.roles import get_all_roles, get_role_display
 import hashlib
 
-# Roles that use the Android app — need email for Firebase Auth
+try:
+    from firebase_admin import auth as fb_auth
+except ImportError:
+    fb_auth = None
+
+# Roles that use the Android app
 ANDROID_ROLES = {"security", "supervisor", "manager", "hr"}
 
 
 def _hash(p: str) -> str:
     return hashlib.sha256(p.encode()).hexdigest()
+
+
+def _create_or_get_firebase_auth(email: str, password: str, display_name: str) -> str:
+    """
+    Creates a Firebase Auth user, or returns their existing UID if already created.
+    Returns None if firebase_admin is not available.
+    """
+    if fb_auth is None:
+        return None
+    if not email:
+        return None
+    try:
+        existing = fb_auth.get_user_by_email(email)
+        # Already exists — update password in case it changed
+        if password:
+            fb_auth.update_user(existing.uid, password=password, display_name=display_name)
+        return existing.uid
+    except fb_auth.UserNotFoundError:
+        pass
+    user = fb_auth.create_user(
+        email=email,
+        password=password,
+        display_name=display_name,
+        email_verified=False,
+    )
+    return user.uid
+
+
+def _update_firebase_auth_password(uid: str, new_password: str):
+    if fb_auth is None or not uid:
+        return
+    try:
+        fb_auth.update_user(uid, password=new_password)
+    except Exception:
+        pass
 
 
 def _bind_scroll(canvas):
@@ -37,7 +79,6 @@ def _bind_scroll(canvas):
 
 
 def _get_company_name(db) -> str:
-    """Read company name from settings/company Firestore document."""
     try:
         doc = db.collection("settings").document("company").get()
         if doc.exists:
@@ -64,37 +105,37 @@ class ManageUsersPanel(tk.Frame):
     def _build_ui(self):
         bar = tk.Frame(self, bg="#1a2740", pady=8)
         bar.pack(fill="x")
-        tk.Label(bar, text="👮 Manage Admin, Security & Supervisor Users",
+        tk.Label(bar, text="\U0001f46e Manage Admin, Security & Supervisor Users",
                  font=("Arial", 13, "bold"), bg="#1a2740", fg="#f0c040").pack(side="left", padx=12)
         tk.Button(bar, text="+ Create User", command=self._add_dialog,
                   bg="#27ae60", fg="white", padx=12, relief="flat",
                   font=("Arial", 9, "bold"), pady=5, cursor="hand2").pack(side="right", padx=6)
-        tk.Button(bar, text="🔄 Refresh", command=self._load,
+        tk.Button(bar, text="\U0001f504 Refresh", command=self._load,
                   bg="#555", fg="white", padx=10, relief="flat").pack(side="right", padx=4)
 
         info = tk.Frame(self, bg="#132030", padx=12, pady=8)
         info.pack(fill="x", padx=6, pady=(4, 0))
+        sdk_status = "\u2705 firebase_admin ready" if fb_auth else "\u26a0\ufe0f firebase_admin not installed — Auth auto-create disabled"
+        sdk_color  = "#27ae60" if fb_auth else "#e74c3c"
         tk.Label(info,
-                 text="ℹ️  Security / Supervisor → login on Android app (Email + Password).",
+                 text="\u2139\ufe0f  Security / Supervisor / Manager / HR \u2192 Android app (Email + Password).",
                  bg="#132030", fg="#f0c040", font=("Arial", 9)).pack(anchor="w")
         tk.Label(info,
-                 text="    Admin / HR / CA → login on this Python admin app (Username + Password).",
-                 bg="#132030", fg="#aaa", font=("Arial", 8)).pack(anchor="w")
-        tk.Label(info,
-                 text="    ⚠️  After saving Security/Supervisor, also create their Firebase Auth account"
-                      " in Firebase Console (Auth → Add User) with the same Email + Password.",
-                 bg="#132030", fg="#e74c3c", font=("Arial", 8), wraplength=640,
-                 justify="left").pack(anchor="w")
+                 text="    Firebase Auth account is created AUTOMATICALLY on save.",
+                 bg="#132030", fg="#27ae60", font=("Arial", 8)).pack(anchor="w")
+        tk.Label(info, text=f"    {sdk_status}",
+                 bg="#132030", fg=sdk_color, font=("Arial", 8)).pack(anchor="w")
 
-        cols = ("username", "display_name", "email", "emp_id", "role", "active")
+        cols = ("username", "display_name", "email", "emp_id", "role", "active", "auth_uid")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
         for col, lbl, w in [
-            ("username",     "Username",     130),
-            ("display_name", "Display Name", 150),
-            ("email",        "Email",        180),
+            ("username",     "Username",     120),
+            ("display_name", "Display Name", 140),
+            ("email",        "Email",        170),
             ("emp_id",       "Emp ID",        90),
             ("role",         "Role",         110),
             ("active",       "Status",        80),
+            ("auth_uid",     "Firebase UID", 130),
         ]:
             self.tree.heading(col, text=lbl)
             self.tree.column(col, width=w)
@@ -110,13 +151,16 @@ class ManageUsersPanel(tk.Frame):
             for doc in self.db.collection("admin_users").stream():
                 u = doc.to_dict()
                 self.users[u.get("username", "")] = u
+                auth_uid = u.get("auth_uid", "")
+                uid_disp = (auth_uid[:14] + "\u2026") if len(auth_uid) > 14 else auth_uid
                 self.tree.insert("", "end", values=(
                     u.get("username", ""),
                     u.get("display_name", ""),
                     u.get("email", ""),
                     u.get("employee_id", ""),
                     get_role_display(u.get("role", "")),
-                    "✅ Active" if u.get("active") else "❌ Inactive",
+                    "\u2705 Active" if u.get("active") else "\u274c Inactive",
+                    uid_disp or "(none)",
                 ))
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
@@ -142,14 +186,13 @@ class AdminUserDialog(tk.Toplevel):
         self.on_save = on_save
         self.db = get_db()
         self._company_name = _get_company_name(self.db)
-        self.title("Create User" if mode == "add" else f"Edit User — {user.get('username', '')}")
-        self.geometry("500x660")
+        self.title("Create User" if mode == "add" else f"Edit User \u2014 {user.get('username', '')}")
+        self.geometry("500x680")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
         self.grab_set()
         self._build()
 
-    # ------------------------------------------------------------------ UI
     def _build(self):
         canvas = tk.Canvas(self, bg="#0d1b2a", highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -163,8 +206,16 @@ class AdminUserDialog(tk.Toplevel):
         _bind_scroll(canvas)
 
         u = self.user
-        tk.Label(frm, text="👮 Admin / Security / Supervisor User",
+        tk.Label(frm, text="\U0001f46e Admin / Security / Supervisor User",
                  font=("Arial", 13, "bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w", pady=(0, 14))
+
+        # Show existing Firebase UID in edit mode
+        if self.mode == "edit":
+            existing_uid = u.get("auth_uid", "")
+            uid_text = f"Firebase UID: {existing_uid}" if existing_uid else "Firebase UID: (not created yet)"
+            uid_color = "#27ae60" if existing_uid else "#e74c3c"
+            tk.Label(frm, text=uid_text, bg="#0d1b2a", fg=uid_color,
+                     font=("Arial", 8)).pack(anchor="w", pady=(0, 8))
 
         def row_field(label, key, default="", show="", colour="#ccc"):
             row = tk.Frame(frm, bg="#0d1b2a")
@@ -177,24 +228,17 @@ class AdminUserDialog(tk.Toplevel):
                      relief="flat", bd=4).pack(side="left")
             return var
 
-        # ── Basic info ─────────────────────────────────────────────
-        self.v_username = row_field("Username", "username")
-        self.v_display_name = row_field("Display Name (Name)", "display_name")
+        self.v_username     = row_field("Username",           "username")
+        self.v_display_name = row_field("Display Name (Name)","display_name")
+        self.v_email        = row_field("Email *",             "email",      colour="#f0c040")
+        tk.Label(frm, text="  \u2b06 Required for Android login. Firebase Auth auto-created on Save.",
+                 bg="#0d1b2a", fg="#27ae60", font=("Arial", 8)).pack(anchor="w", pady=(0, 4))
 
-        # Email — required for Android roles
-        self.v_email = row_field("Email *", "email", colour="#f0c040")
-        tk.Label(frm, text="  ⬆ Required for Security/Supervisor Android login",
-                 bg="#0d1b2a", fg="#e74c3c", font=("Arial", 8)).pack(anchor="w", pady=(0, 4))
-
-        # Employee ID
-        self.v_emp_id = row_field("Employee ID", "employee_id")
-        tk.Label(frm, text="  ⬆ e.g. EMP-0025  — used for ID card, QR, attendance",
+        self.v_emp_id      = row_field("Employee ID",  "employee_id")
+        tk.Label(frm, text="  \u2b06 e.g. EMP-0025  \u2014 used for ID card, QR, attendance",
                  bg="#0d1b2a", fg="#7f8c8d", font=("Arial", 8)).pack(anchor="w", pady=(0, 4))
+        self.v_department  = row_field("Department",   "department",  default="Security")
 
-        # Department
-        self.v_department = row_field("Department", "department", default="Security")
-
-        # ── Role dropdown ─────────────────────────────────────────────
         role_row = tk.Frame(frm, bg="#0d1b2a")
         role_row.pack(fill="x", pady=4)
         tk.Label(role_row, text="Role:", width=20, anchor="w",
@@ -210,7 +254,6 @@ class AdminUserDialog(tk.Toplevel):
         self.lbl_hint.pack(anchor="w", pady=(0, 8))
         self._update_hint()
 
-        # ── Company (auto-filled, read-only display) ────────────────────
         cname_row = tk.Frame(frm, bg="#0d1b2a")
         cname_row.pack(fill="x", pady=4)
         tk.Label(cname_row, text="Company:", width=20, anchor="w",
@@ -218,23 +261,21 @@ class AdminUserDialog(tk.Toplevel):
         tk.Label(cname_row, text=self._company_name, bg="#0d1b2a",
                  fg="#27ae60", font=("Arial", 9, "bold")).pack(side="left")
 
-        # ── Password ─────────────────────────────────────────────
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=8)
         tk.Label(frm, text="Password", fg="#f0c040", bg="#0d1b2a",
                  font=("Arial", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
         if self.mode == "add":
             self.v_password = row_field("Password", "password")
-            self.v_confirm = row_field("Confirm Password", "confirm")
-            tk.Label(frm, text="Min 6 chars. Share Email + Password with the user.",
+            self.v_confirm  = row_field("Confirm Password", "confirm")
+            tk.Label(frm, text="Min 6 chars. Firebase Auth account auto-created on Save.",
                      bg="#0d1b2a", fg="#7f8c8d", font=("Arial", 8)).pack(anchor="w")
         else:
             tk.Label(frm, text="Leave blank to keep existing password.",
                      bg="#0d1b2a", fg="#aaa", font=("Arial", 8)).pack(anchor="w")
-            self.v_password = row_field("New Password", "new_pass")
-            self.v_confirm = row_field("Confirm Password", "confirm")
+            self.v_password = row_field("New Password",     "new_pass")
+            self.v_confirm  = row_field("Confirm Password", "confirm")
 
-        # ── Active toggle ─────────────────────────────────────────────
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=8)
         act_row = tk.Frame(frm, bg="#0d1b2a")
         act_row.pack(fill="x", pady=4)
@@ -245,11 +286,10 @@ class AdminUserDialog(tk.Toplevel):
                        fg="white", selectcolor="#1e3a5f",
                        activebackground="#0d1b2a").pack(side="left")
 
-        # ── Save / Cancel buttons ──────────────────────────────────────
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=8)
         br = tk.Frame(frm, bg="#0d1b2a")
         br.pack(fill="x", pady=4)
-        tk.Button(br, text="✔ Save User", command=self._save,
+        tk.Button(br, text="\u2714 Save User", command=self._save,
                   bg="#f77f00", fg="white", font=("Arial", 10, "bold"),
                   relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0, 10))
         tk.Button(br, text="Cancel", command=self.destroy,
@@ -260,14 +300,14 @@ class AdminUserDialog(tk.Toplevel):
         hints = {
             "super_admin": "Full access. Python admin app only.",
             "admin":       "Full access except Super Admin. Python admin app only.",
-            "hr":          "Employees, Attendance, Salary, ID cards.",
+            "hr":          "\U0001f4f1 Android app. Employees, Attendance, Salary, ID cards.",
             "ca":          "Salary, Bonus, Raise, Reports.",
-            "manager":     "Dashboard, Attendance, Employees, Security.",
-            "supervisor":  "🛡️ Can scan employee QR on Android app + view attendance/employees.",
-            "security":    "🛡️ Android QR scanner ONLY — marks IN/OUT for employees without phones.",
+            "manager":     "\U0001f4f1 Android app. Dashboard, Attendance, Employees, Security.",
+            "supervisor":  "\U0001f6e1\ufe0f Android QR scanner + view attendance/employees.",
+            "security":    "\U0001f6e1\ufe0f Android QR scanner ONLY \u2014 marks IN/OUT for employees.",
         }
-        colour = "#f0c040" if role in ("security", "supervisor") else "#aaa"
-        self.lbl_hint.config(text=f"  ℹ️  {hints.get(role, '')}", fg=colour)
+        colour = "#f0c040" if role in ANDROID_ROLES else "#aaa"
+        self.lbl_hint.config(text=f"  \u2139\ufe0f  {hints.get(role, '')}", fg=colour)
 
     # ---------------------------------------------------------------- Save
     def _save(self):
@@ -281,12 +321,10 @@ class AdminUserDialog(tk.Toplevel):
         confirm      = self.v_confirm.get().strip()
         active       = self.v_active.get()
 
-        # ─ Validate basics
         if not username or not display_name:
             messagebox.showerror("Error", "Username and Display Name are required.", parent=self)
             return
 
-        # Email required for Android roles
         if role in ANDROID_ROLES and not email:
             messagebox.showerror(
                 "Email Required",
@@ -295,7 +333,6 @@ class AdminUserDialog(tk.Toplevel):
                 parent=self)
             return
 
-        # Employee ID required for security/supervisor (for QR, ID card)
         if role in ("security", "supervisor") and not emp_id:
             messagebox.showerror(
                 "Employee ID Required",
@@ -304,7 +341,6 @@ class AdminUserDialog(tk.Toplevel):
                 parent=self)
             return
 
-        # ─ Password
         if self.mode == "add":
             if len(password) < 6:
                 messagebox.showerror("Error", "Password must be at least 6 characters.", parent=self)
@@ -323,13 +359,39 @@ class AdminUserDialog(tk.Toplevel):
                     return
                 pw_hash = _hash(password)
             else:
-                pw_hash = self.user.get("password_hash", "")
+                pw_hash    = self.user.get("password_hash", "")
+                password   = ""   # no change
 
-        # ── 1. Write to admin_users (Python admin app login) ───────────────
+        # ── Step 1: Auto-create Firebase Auth account ────────────────────
+        auth_uid = self.user.get("auth_uid", "")  # existing uid if editing
+        firebase_error = None
+        firebase_created = False
+
+        if role in ANDROID_ROLES and email:
+            if fb_auth is None:
+                firebase_error = (
+                    "firebase_admin not installed.\n"
+                    "Install it: pip install firebase-admin\n"
+                    "Android SHA-256 fallback auth will still work."
+                )
+            else:
+                try:
+                    uid = _create_or_get_firebase_auth(
+                        email,
+                        password if password else None,
+                        display_name
+                    )
+                    if uid:
+                        auth_uid = uid
+                        firebase_created = True
+                except Exception as ex:
+                    firebase_error = str(ex)
+
+        # ── Step 2: Write admin_users doc ────────────────────────────────
         admin_doc = {
             "username":             username,
             "display_name":         display_name,
-            "name":                 display_name,   # alias used by some modules
+            "name":                 display_name,
             "email":                email,
             "employee_id":          emp_id,
             "department":           department,
@@ -339,6 +401,7 @@ class AdminUserDialog(tk.Toplevel):
             "must_change_password": False,
             "company_name":         self._company_name,
             "company":              self._company_name,
+            "auth_uid":             auth_uid,  # store so edit dialog shows it
         }
         try:
             self.db.collection("admin_users").document(username).set(admin_doc)
@@ -346,29 +409,39 @@ class AdminUserDialog(tk.Toplevel):
             messagebox.showerror("Error", f"Failed to save admin user:\n{ex}", parent=self)
             return
 
-        # ── 2. Write to employees (Android Firebase Auth post-login lookup) ──
-        # After Firebase Auth succeeds, SecurityLoginActivity calls
-        # getEmployeeByUid(uid) which queries the employees collection.
-        # We write a doc here (keyed by employee_id) so Android finds it.
-        # The 'uid' field will be updated automatically once the guard logs
-        # in for the first time via Android (handled in SecurityLoginActivity).
-        if role in ANDROID_ROLES and emp_id:
+        # ── Step 3: Write employees doc keyed by Firebase Auth UID ───────
+        # Android LoginActivity resolves username -> Firestore doc -> password_hash / uid
+        # The doc must be stored with uid as key (same as employees.py pattern).
+        # We ALSO write a secondary doc keyed by emp_id so QR/ID card lookups work.
+        if role in ANDROID_ROLES:
             emp_doc = {
-                "name":          display_name,
-                "employee_id":   emp_id,
-                "role":          role,
-                "email":         email,
-                "username":      username,
-                "department":    department,
-                "designation":   get_role_display(role),
-                "company_name":  self._company_name,
-                "company":       self._company_name,
-                "status":        "active" if active else "inactive",
-                "is_management": True,
-                "photo_url":     "",
+                "name":           display_name,
+                "display_name":   display_name,
+                "employee_id":    emp_id,
+                "role":           role,
+                "email":          email,
+                "username":       username,
+                "department":     department,
+                "designation":    get_role_display(role),
+                "company_name":   self._company_name,
+                "company":        self._company_name,
+                "status":         "active" if active else "inactive",
+                "is_management":  True,
+                "photo_url":      "",
+                "password_hash":  pw_hash,   # SHA-256 fallback for Android
+                "must_change_password": True,
             }
+            if auth_uid:
+                emp_doc["uid"] = auth_uid
+
             try:
-                self.db.collection("employees").document(emp_id).set(emp_doc)
+                # Primary doc: keyed by auth_uid (if available) else emp_id
+                primary_key = auth_uid if auth_uid else emp_id
+                self.db.collection("employees").document(primary_key).set(emp_doc)
+
+                # Secondary doc keyed by emp_id (for QR/ID card lookups)
+                if auth_uid and emp_id and auth_uid != emp_id:
+                    self.db.collection("employees").document(emp_id).set(emp_doc)
             except Exception as ex:
                 messagebox.showwarning(
                     "Partial Save",
@@ -376,21 +449,30 @@ class AdminUserDialog(tk.Toplevel):
                     "Android login may not work. Please fix Firestore permissions.",
                     parent=self)
 
-        # ── Success popup ────────────────────────────────────────────────
-        msg = f"✅ User '{display_name}' saved!\n" \
-              f"Role: {get_role_display(role)}\n" \
+        # ── Step 4: Success message ──────────────────────────────────────
+        msg = f"\u2705 User '{display_name}' saved!\n"\
+              f"Role: {get_role_display(role)}\n"\
               f"Company: {self._company_name}\n"
 
-        if self.mode == "add" and role in ANDROID_ROLES:
-            msg += (
-                f"\n📱 Android Login Credentials:"
-                f"\n  Email:    {email}"
-                f"\n  Password: {password}"
-                f"\n\n⚠️ IMPORTANT: Also go to Firebase Console"
-                f"\n  Authentication → Users → Add User"
-                f"\n  Use the same Email + Password above."
-                f"\n  This activates Android sign-in for this user."
-            )
+        if role in ANDROID_ROLES and self.mode == "add":
+            if firebase_created:
+                msg += (
+                    f"\n\U0001f4f1 Android Login:\n"
+                    f"  Email:    {email}\n"
+                    f"  Password: {password}\n"
+                    f"  Firebase UID: {auth_uid}\n\n"
+                    f"\u2705 Firebase Auth account created automatically.\n"
+                    f"   Android login is ready \u2014 no manual steps needed."
+                )
+            elif firebase_error:
+                msg += (
+                    f"\n\U0001f4f1 Android Login Credentials:\n"
+                    f"  Email:    {email}\n"
+                    f"  Password: {password}\n\n"
+                    f"\u26a0\ufe0f Firebase Auth auto-create failed:\n  {firebase_error}\n\n"
+                    f"SHA-256 hash fallback is saved \u2014 Android can still"
+                    f" log in if LoginActivity fallback auth is enabled."
+                )
         elif self.mode == "add":
             msg += f"Username: {username}\nPassword: {password}"
 
