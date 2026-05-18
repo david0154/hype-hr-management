@@ -1,5 +1,8 @@
 # settings.py — Full Settings Panel (Hype HR Management)
 # Tabs: Company | SMTP | SMS | Salary Rules | Attendance Rules | Bonus Dates | Admin Users | My Account
+# FIX: Admin Users tab now embeds ManageUsersPanel from manage_users.py
+#      which has: Delete User, Firebase Auth auto-create for security/supervisor,
+#      email field, employee ID field, and Android credentials popup.
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
@@ -8,6 +11,7 @@ import hashlib
 from utils.db import read, write, update, delete, read_all
 from utils.firebase_config import get_db
 from modules.roles import get_all_roles, get_role_display, has_permission
+from modules.manage_users import ManageUsersPanel
 
 
 RELIGIONS = ["Hindu", "Muslim", "Christian", "Sikh", "Buddhist", "Jain", "Other"]
@@ -88,7 +92,6 @@ class SettingsModule(tk.Frame):
         ]
         self._vars_smtp = self._field_group(frm, fields, data, secret_keys=["smtp_pass"])
 
-        # Encryption dropdown
         row = tk.Frame(frm, bg=frm["bg"]); row.pack(fill="x", pady=3)
         tk.Label(row, text="Encryption:", width=20, anchor="w", bg=frm["bg"], fg="#ccc").pack(side="left")
         self._smtp_enc = tk.StringVar(value=data.get("smtp_encryption", "TLS"))
@@ -149,7 +152,6 @@ class SettingsModule(tk.Frame):
         ]
         self._vars_sms = self._field_group(frm, fields, data, secret_keys=["sms_api_key", "sms_account_sid"])
 
-        # Toggles
         self._sms_on_salary  = tk.BooleanVar(value=data.get("send_on_salary",  True))
         self._sms_on_advance = tk.BooleanVar(value=data.get("send_on_advance", False))
         for var, text in [
@@ -192,7 +194,6 @@ class SettingsModule(tk.Frame):
                      bg="#1e3a5f", fg="white", insertbackground="white").pack(side="left")
             self._vars_rules[key] = var
 
-        # Payment mode dropdown
         row = tk.Frame(frm, bg=frm["bg"]); row.pack(fill="x", pady=4)
         tk.Label(row, text="Default Payment Mode:", width=28, anchor="w",
                  bg=frm["bg"], fg="#ccc").pack(side="left")
@@ -200,7 +201,6 @@ class SettingsModule(tk.Frame):
         ttk.Combobox(row, textvariable=self._default_pay_mode, values=PAYMENT_MODES,
                      width=14, state="readonly").pack(side="left")
 
-        # Toggles
         self._auto_deduct_advance = tk.BooleanVar(value=data.get("auto_deduct_advance", True))
         self._show_bonus_employee = tk.BooleanVar(value=data.get("show_bonus_employee", False))
         for var, text in [
@@ -361,119 +361,17 @@ class SettingsModule(tk.Frame):
         messagebox.showinfo("Saved", "Bonus dates saved.\nRemember to set each employee's religion in their profile.")
 
     # ════════════════════════════════════════════════════════════
-    # 7. ADMIN USERS (Super Admin / Admin only)
+    # 7. ADMIN USERS — now uses ManageUsersPanel from manage_users.py
+    #    Features: + Create User, 🗑 Delete User, Firebase Auth
+    #    auto-create for Security/Supervisor, email + emp_id fields,
+    #    Android credentials popup on save.
     # ════════════════════════════════════════════════════════════
     def _admin_users_tab(self, nb):
-        frm = self._tab(nb, " 👥 Admin Users ")
-
-        top = tk.Frame(frm, bg=frm["bg"]); top.pack(fill="x", pady=(0, 8))
-        tk.Label(top, text="Manage admin users and their roles.",
-                 bg=frm["bg"], fg="#ccc", font=("Helvetica", 10)).pack(side="left")
-        if self.role == "super_admin":
-            tk.Button(top, text="+ Add User", bg="#27ae60", fg="white",
-                      relief="flat", padx=10,
-                      command=self._add_user_dialog).pack(side="right")
-
-        cols = ("username", "display_name", "role", "active")
-        self._users_tree = ttk.Treeview(frm, columns=cols, show="headings", height=14)
-        for col, lbl, w in [
-            ("username",     "Username",     140),
-            ("display_name", "Display Name", 180),
-            ("role",         "Role",         140),
-            ("active",       "Status",        80),
-        ]:
-            self._users_tree.heading(col, text=lbl)
-            self._users_tree.column(col, width=w)
-        self._users_tree.pack(fill="both", expand=True, padx=0)
-        self._users_tree.bind("<Double-1>", lambda e: self._edit_user_dialog())
-
-        btn_row = tk.Frame(frm, bg=frm["bg"]); btn_row.pack(fill="x", pady=6)
-        tk.Button(btn_row, text="✏️ Edit Selected",
-                  command=self._edit_user_dialog,
-                  bg="#1e6f9f", fg="white", relief="flat", padx=10).pack(side="left", padx=(0, 6))
-        if self.role == "super_admin":
-            tk.Button(btn_row, text="🔴 Deactivate",
-                      command=self._toggle_user_active,
-                      bg="#c0392b", fg="white", relief="flat", padx=10).pack(side="left", padx=(0, 6))
-            tk.Button(btn_row, text="🔑 Reset Password",
-                      command=self._reset_user_password,
-                      bg="#8e44ad", fg="white", relief="flat", padx=10).pack(side="left", padx=(0, 6))
-        tk.Button(btn_row, text="🔄 Refresh",
-                  command=self._load_users,
-                  bg="#555", fg="white", relief="flat", padx=10).pack(side="left")
-
-        self._load_users()
-
-    def _load_users(self):
-        self._users_tree.delete(*self._users_tree.get_children())
-        try:
-            db = get_db()
-            for doc in db.collection("admin_users").stream():
-                u = doc.to_dict()
-                self._users_tree.insert("", "end", iid=u["username"], values=(
-                    u.get("username", ""),
-                    u.get("display_name", ""),
-                    get_role_display(u.get("role", "")),
-                    "Active" if u.get("active", True) else "Inactive",
-                ))
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load users: {e}")
-
-    def _selected_username(self):
-        sel = self._users_tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a user first.")
-            return None
-        return self._users_tree.item(sel[0])["values"][0]
-
-    def _add_user_dialog(self):
-        _AdminUserDialog(self, mode="add", on_save=self._load_users)
-
-    def _edit_user_dialog(self):
-        uname = self._selected_username()
-        if not uname: return
-        try:
-            doc = get_db().collection("admin_users").document(uname).get()
-            if not doc.exists:
-                messagebox.showerror("Error", "User not found.")
-                return
-            _AdminUserDialog(self, mode="edit", user_data=doc.to_dict(), on_save=self._load_users)
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def _toggle_user_active(self):
-        uname = self._selected_username()
-        if not uname: return
-        if uname == self.current_user.get("username"):
-            messagebox.showwarning("Blocked", "You cannot deactivate your own account.")
-            return
-        try:
-            ref  = get_db().collection("admin_users").document(uname)
-            user = ref.get().to_dict()
-            new_status = not user.get("active", True)
-            ref.update({"active": new_status})
-            status_text = "Activated" if new_status else "Deactivated"
-            messagebox.showinfo("Done", f"{uname} has been {status_text}.")
-            self._load_users()
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def _reset_user_password(self):
-        uname = self._selected_username()
-        if not uname: return
-        new_pass = "Hype@Reset#123"
-        if not messagebox.askyesno("Reset Password",
-                f"Reset password for '{uname}' to:\n{new_pass}\n\nUser must change it on next login."):
-            return
-        try:
-            get_db().collection("admin_users").document(uname).update({
-                "password_hash": _hash(new_pass),
-                "must_change_password": True,
-            })
-            messagebox.showinfo("Done",
-                f"Password reset for {uname}.\nTemporary password: {new_pass}")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+        outer = tk.Frame(nb, bg="#0d1b2a")
+        nb.add(outer, text=" 👥 Admin Users ")
+        # Embed ManageUsersPanel directly — it owns its own toolbar + table
+        panel = ManageUsersPanel(outer, current_user=self.current_user)
+        panel.pack(fill="both", expand=True)
 
     # ════════════════════════════════════════════════════════════
     # 8. MY ACCOUNT
@@ -489,7 +387,6 @@ class SettingsModule(tk.Frame):
         tk.Label(info, text=f"Username: {u.get('username', '')}   |   Role: {get_role_display(u.get('role', ''))}",
                  font=("Arial", 9), bg="#1a2740", fg="#aaa").pack(anchor="w", pady=4)
 
-        # Change display name
         tk.Label(frm, text="― Update Display Name ―",
                  font=("Helvetica", 10, "bold"), bg=frm["bg"], fg="#ccc").pack(anchor="w", pady=(0, 4))
         name_row = tk.Frame(frm, bg=frm["bg"]); name_row.pack(fill="x", pady=2)
@@ -504,7 +401,6 @@ class SettingsModule(tk.Frame):
 
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=10)
 
-        # Change password
         tk.Label(frm, text="― Change Password ―",
                  font=("Helvetica", 10, "bold"), bg=frm["bg"], fg="#ccc").pack(anchor="w", pady=(0, 4))
         self._old_pass  = self._pass_field(frm, "Current Password")
@@ -570,7 +466,6 @@ class SettingsModule(tk.Frame):
     # HELPERS
     # ════════════════════════════════════════════════════════════
     def _tab(self, nb, title):
-        """Create a scrollable tab frame."""
         outer = tk.Frame(nb, bg="#0d1b2a")
         nb.add(outer, text=title)
         canvas = tk.Canvas(outer, bg="#0d1b2a", highlightthickness=0)
@@ -606,113 +501,3 @@ class SettingsModule(tk.Frame):
                   command=command,
                   bg=color, fg="white", padx=12, pady=4,
                   relief="flat", cursor="hand2").pack(anchor="w", pady=12)
-
-
-# ════════════════════════════════════════════════════════════
-# Admin User Add / Edit Dialog
-# ════════════════════════════════════════════════════════════
-class _AdminUserDialog(tk.Toplevel):
-    def __init__(self, parent, mode="add", user_data=None, on_save=None):
-        super().__init__(parent)
-        self.mode      = mode
-        self.user_data = user_data or {}
-        self.on_save   = on_save
-        self.title("Add Admin User" if mode == "add" else f"Edit — {user_data.get('username', '')}")
-        self.geometry("420x400")
-        self.resizable(False, False)
-        self.configure(bg="#0d1b2a")
-        self.grab_set()
-        self._build()
-
-    def _build(self):
-        frm = tk.Frame(self, bg="#0d1b2a", padx=20, pady=16)
-        frm.pack(fill="both", expand=True)
-        u = self.user_data
-
-        def field(label, key, default="", show=""):
-            row = tk.Frame(frm, bg="#0d1b2a"); row.pack(fill="x", pady=4)
-            tk.Label(row, text=label + ":", width=18, anchor="w",
-                     bg="#0d1b2a", fg="#ccc").pack(side="left")
-            var = tk.StringVar(value=u.get(key, default))
-            tk.Entry(row, textvariable=var, width=26, show=show,
-                     bg="#1e3a5f", fg="white", insertbackground="white").pack(side="left")
-            return var
-
-        self.v_username = field("Username",     "username")
-        if self.mode == "edit":
-            # username is read-only in edit mode
-            pass
-        self.v_display  = field("Display Name", "display_name")
-
-        # Role dropdown
-        row = tk.Frame(frm, bg="#0d1b2a"); row.pack(fill="x", pady=4)
-        tk.Label(row, text="Role:", width=18, anchor="w",
-                 bg="#0d1b2a", fg="#ccc").pack(side="left")
-        self.v_role = tk.StringVar(value=u.get("role", "manager"))
-        all_roles = [(r, get_role_display(r)) for r in get_all_roles()]
-        ttk.Combobox(row, textvariable=self.v_role,
-                     values=[f"{r}" for r, _ in all_roles],
-                     width=18, state="readonly").pack(side="left")
-
-        if self.mode == "add":
-            self.v_pass    = field("Password",     "",    show="*")
-            self.v_confirm = field("Confirm Pass", "",    show="*")
-        else:
-            self.v_pass = self.v_confirm = None
-
-        # Active toggle
-        self.v_active = tk.BooleanVar(value=u.get("active", True))
-        tk.Checkbutton(frm, text="Account Active", variable=self.v_active,
-                       bg="#0d1b2a", fg="#ccc", selectcolor="#1a2740",
-                       activebackground="#0d1b2a").pack(anchor="w", pady=4)
-
-        btn_row = tk.Frame(frm, bg="#0d1b2a"); btn_row.pack(fill="x", pady=10)
-        tk.Button(btn_row, text="✔ Save", command=self._save,
-                  bg="#27ae60", fg="white", padx=14, relief="flat").pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Cancel", command=self.destroy,
-                  padx=14, relief="flat").pack(side="left")
-
-    def _save(self):
-        username = self.v_username.get().strip().lower()
-        display  = self.v_display.get().strip()
-        role     = self.v_role.get().strip()
-        active   = self.v_active.get()
-
-        if not username or not display:
-            messagebox.showerror("Error", "Username and Display Name are required.", parent=self)
-            return
-
-        try:
-            db = get_db()
-            if self.mode == "add":
-                pwd = self.v_pass.get()
-                cfm = self.v_confirm.get()
-                if len(pwd) < 8:
-                    messagebox.showerror("Error", "Password must be at least 8 characters.", parent=self)
-                    return
-                if pwd != cfm:
-                    messagebox.showerror("Error", "Passwords do not match.", parent=self)
-                    return
-                if db.collection("admin_users").document(username).get().exists:
-                    messagebox.showerror("Error", f"Username '{username}' already exists.", parent=self)
-                    return
-                db.collection("admin_users").document(username).set({
-                    "username":             username,
-                    "display_name":         display,
-                    "role":                 role,
-                    "password_hash":        _hash(pwd),
-                    "must_change_password": True,
-                    "active":               active,
-                })
-            else:
-                db.collection("admin_users").document(self.user_data["username"]).update({
-                    "display_name": display,
-                    "role":         role,
-                    "active":       active,
-                })
-            messagebox.showinfo("Saved", f"User '{username}' saved successfully.", parent=self)
-            if self.on_save:
-                self.on_save()
-            self.destroy()
-        except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self)
