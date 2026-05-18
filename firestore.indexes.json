@@ -1,0 +1,22 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "attendance_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "employee_id", "order": "ASCENDING" },
+        { "fieldPath": "date",        "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "salary_slips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "employee_id", "order": "ASCENDING" },
+        { "fieldPath": "year",        "order": "DESCENDING" },
+        { "fieldPath": "month_num",   "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

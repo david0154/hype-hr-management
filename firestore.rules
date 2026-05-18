@@ -35,11 +35,20 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------
-    // Salary slips
+    // Salary slips  (collection used by Android app: salary_slips)
     // ---------------------------------------------------------------
-    // Each slip document ID is formatted as  <uid>_YYYY-MM
-    // e.g.  abc123_2026-05
+    // Each document has an employee_id field matching the employee.
     // Employees can only read their own slips.
+    match /salary_slips/{slipId} {
+      allow read:  if isAuth() &&
+                   resource.data.employee_id == request.auth.token.employee_id;
+      allow write: if false;         // PHP cron / admin SDK only
+    }
+
+    // ---------------------------------------------------------------
+    // Salary slips (legacy collection name 'salary' — kept for
+    // backward compatibility with admin_app / PHP backend)
+    // ---------------------------------------------------------------
     match /salary/{slipId} {
       allow read:  if isAuth() &&
                    slipId.matches(request.auth.uid + '_.*');
