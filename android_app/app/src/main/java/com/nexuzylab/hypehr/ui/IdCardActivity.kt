@@ -19,13 +19,9 @@ import java.io.FileOutputStream
 /**
  * IdCardActivity — Generates and displays the employee ID card.
  *
- * FIX: Company name is ALWAYS loaded from Firestore settings/company.
- *      No more hardcoded "Hype Pvt Ltd" fallback shown to the user.
- *      If Firestore is unreachable, shows "Your Company" as neutral placeholder.
- *
- * QR format: HYPE_EMP|<employee_id>|<name>|<username>|<companySlug>
- *   SecurityScanActivity parses field[4] as location slug.
- *   Now uses the REAL company name from Firestore so scan gate shows correct name.
+ * FIX: Company name loaded from Firestore settings/company.
+ *      Priority: company_name → name → title → employee.company → "Your Company"
+ *      No more hardcoded "Hype Pvt Ltd" shown on the ID card.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -90,23 +86,23 @@ class IdCardActivity : AppCompatActivity() {
         val username    = doc.getString("username")    ?: employeeId
         val aadhaar     = doc.getString("aadhaar")     ?: ""
         val maskedAadh  = if (aadhaar.length >= 4) "XXXX-XXXX-${aadhaar.takeLast(4)}" else "—"
+        // employee's own company field as last fallback
+        val empCompanyFallback = doc.getString("company")?.takeIf { it.isNotBlank() } ?: "Your Company"
 
-        // Always load company from Firestore — never hardcode
+        // Load company name from Firestore settings/company
+        // Priority: company_name → name → title → employee.company field → "Your Company"
         db.collection("settings").document("company").get()
             .addOnSuccessListener { company ->
-                // FIX: use real company name; only fallback to neutral string if truly missing
-                val companyName = company.getString("name")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "Your Company"
+                val companyName = company.getString("company_name")?.takeIf { it.isNotBlank() }
+                    ?: company.getString("name")?.takeIf { it.isNotBlank() }
+                    ?: company.getString("title")?.takeIf { it.isNotBlank() }
+                    ?: empCompanyFallback
+                Log.d(TAG, "ID Card company name: $companyName")
                 renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, companyName)
             }
             .addOnFailureListener { e ->
                 Log.w(TAG, "Could not load company settings: ${e.message}")
-                // Still try to render — use employee's own company field if set
-                val empCompany = doc.getString("company")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "Your Company"
-                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, empCompany)
+                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, empCompanyFallback)
             }
     }
 
@@ -120,8 +116,6 @@ class IdCardActivity : AppCompatActivity() {
         binding.tvDesignation.text = designation
         binding.tvAadhaar.text     = aadhaar
 
-        // QR: use actual company slug so SecurityScanActivity shows real gate name
-        // e.g. "Nexuzy Gate", "TechCorp Gate" — not "HYPE Gate"
         val companySlug = companyName.replace(" ", "").uppercase().take(10)
         val qrContent   = "HYPE_EMP|$employeeId|$name|$username|$companySlug"
 
@@ -170,8 +164,7 @@ class IdCardActivity : AppCompatActivity() {
         }
         if (qrBm != null) c.drawBitmap(qrBm, (w - 190).toFloat(), 80f, null)
         val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 16f }
-        // Footer uses real company name too
-        c.drawText("${companyName} | HR Management", 30f, (h - 20).toFloat(), fp)
+        c.drawText("$companyName | HR Management", 30f, (h - 20).toFloat(), fp)
         return bm
     }
 

@@ -8,6 +8,7 @@ import androidx.lifecycle.lifecycleScope
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import com.nexuzylab.hypehr.R
 import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.databinding.ActivityDashboardBinding
@@ -20,15 +21,18 @@ import java.util.TimeZone
 
 /**
  * DashboardActivity — Employee-facing home screen.
- * FIX: btnIdCard and btnLogout added to layout XML.
- * FIX: loadStats reads from sessions collection via getAttendanceHistory()
- *      instead of the never-written attendance_summary subcollection.
+ *
+ * FIX: loadCompanyName() now fetches settings/company → company_name field
+ *      (matches Firebase structure) so employees see "Nexuzy lab" not
+ *      "Hype Pvt Ltd" or any hardcoded placeholder.
+ *
  * Developed by David | Nexuzy Lab
  */
 class DashboardActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityDashboardBinding
     private lateinit var session: SessionManager
+    private val db = FirebaseFirestore.getInstance()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,9 +45,31 @@ class DashboardActivity : AppCompatActivity() {
         dateFmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
         binding.tvDate.text = dateFmt.format(Date())
 
+        loadCompanyName()
         loadEmployeeProfile()
         loadStats()
         setupButtons()
+    }
+
+    /**
+     * Fetch real company name from Firestore.
+     * Priority: company_name → name → title → "Your Company"
+     * Matches your Firebase: settings/company → company_name: "Nexuzy lab"
+     */
+    private fun loadCompanyName() {
+        db.collection("settings").document("company").get()
+            .addOnSuccessListener { doc ->
+                val name = doc.getString("company_name")?.takeIf { it.isNotBlank() }
+                    ?: doc.getString("name")?.takeIf { it.isNotBlank() }
+                    ?: doc.getString("title")?.takeIf { it.isNotBlank() }
+                    ?: "Your Company"
+                // Show company name in header/toolbar subtitle if the view exists
+                try { binding.tvCompanyName.text = name } catch (_: Exception) {}
+                try { supportActionBar?.subtitle = name } catch (_: Exception) {}
+            }
+            .addOnFailureListener {
+                android.util.Log.w("DashboardActivity", "loadCompanyName failed: ${it.message}")
+            }
     }
 
     private fun loadEmployeeProfile() {
@@ -103,16 +129,16 @@ class DashboardActivity : AppCompatActivity() {
             }
             val todayStatus = FirestoreRepository.getTodayAttendanceStatus(empId)
             val todayLabel = when (todayStatus) {
-                "IN"       -> "\u2705 Checked In"
-                "COMPLETE" -> "\u2705 Shift Complete"
-                "OT_IN"    -> "\u23f1 OT In Progress"
-                else       -> "\u274c Not Marked"
+                "IN"       -> "✅ Checked In"
+                "COMPLETE" -> "✅ Shift Complete"
+                "OT_IN"    -> "⏱ OT In Progress"
+                else       -> "❌ Not Marked"
             }
             runOnUiThread {
                 binding.progressDash.visibility = View.GONE
                 binding.tvPresent.text     = presentDays.toString()
-                binding.tvAbsent.text      = "\u2014"
-                binding.tvHalfDays.text    = "\u2014"
+                binding.tvAbsent.text      = "—"
+                binding.tvHalfDays.text    = "—"
                 binding.tvOtHours.text     = otSessions.toString()
                 binding.tvTodayStatus.text = todayLabel
             }
