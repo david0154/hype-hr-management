@@ -19,12 +19,13 @@ import java.io.FileOutputStream
 /**
  * IdCardActivity — Generates and displays the employee ID card.
  *
- * QR format (FIXED): HYPE_EMP|<employee_id>|<name>|<username>|<company>
- *   e.g.  HYPE_EMP|EMP-0001|Ravi Kumar|ravikumar|HYPE
+ * FIX: Company name is ALWAYS loaded from Firestore settings/company.
+ *      No more hardcoded "Hype Pvt Ltd" fallback shown to the user.
+ *      If Firestore is unreachable, shows "Your Company" as neutral placeholder.
  *
- * SecurityScanActivity parses this format to extract employee details.
- * Previously the QR was encoded as "EMP:EMP-0001" which SecurityScanActivity
- * could never parse — now both sides use the same format.
+ * QR format: HYPE_EMP|<employee_id>|<name>|<username>|<companySlug>
+ *   SecurityScanActivity parses field[4] as location slug.
+ *   Now uses the REAL company name from Firestore so scan gate shows correct name.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -90,13 +91,22 @@ class IdCardActivity : AppCompatActivity() {
         val aadhaar     = doc.getString("aadhaar")     ?: ""
         val maskedAadh  = if (aadhaar.length >= 4) "XXXX-XXXX-${aadhaar.takeLast(4)}" else "—"
 
+        // Always load company from Firestore — never hardcode
         db.collection("settings").document("company").get()
             .addOnSuccessListener { company ->
-                val companyName = company.getString("name") ?: "Hype Pvt Ltd"
+                // FIX: use real company name; only fallback to neutral string if truly missing
+                val companyName = company.getString("name")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Your Company"
                 renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, companyName)
             }
-            .addOnFailureListener {
-                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, "Hype Pvt Ltd")
+            .addOnFailureListener { e ->
+                Log.w(TAG, "Could not load company settings: ${e.message}")
+                // Still try to render — use employee's own company field if set
+                val empCompany = doc.getString("company")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Your Company"
+                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, empCompany)
             }
     }
 
@@ -110,8 +120,8 @@ class IdCardActivity : AppCompatActivity() {
         binding.tvDesignation.text = designation
         binding.tvAadhaar.text     = aadhaar
 
-        // QR content format: HYPE_EMP|<id>|<name>|<username>|<company>
-        // SecurityScanActivity splits on '|' to read each field
+        // QR: use actual company slug so SecurityScanActivity shows real gate name
+        // e.g. "Nexuzy Gate", "TechCorp Gate" — not "HYPE Gate"
         val companySlug = companyName.replace(" ", "").uppercase().take(10)
         val qrContent   = "HYPE_EMP|$employeeId|$name|$username|$companySlug"
 
@@ -123,11 +133,11 @@ class IdCardActivity : AppCompatActivity() {
             Log.e(TAG, "QR generation failed: ${e.message}")
         }
 
-        binding.btnShare.setOnClickListener    { shareCard(uid) }
-        binding.btnDownload.setOnClickListener { downloadCard(uid, employeeId) }
+        binding.btnShare.setOnClickListener    { shareCard(uid, companyName) }
+        binding.btnDownload.setOnClickListener { downloadCard(uid, employeeId, companyName) }
     }
 
-    private fun buildCardBitmap(): Bitmap {
+    private fun buildCardBitmap(companyName: String): Bitmap {
         val w = 800; val h = 500
         val bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c  = Canvas(bm)
@@ -139,7 +149,7 @@ class IdCardActivity : AppCompatActivity() {
         val paintWh = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE; textSize = 32f; typeface = Typeface.DEFAULT_BOLD
         }
-        c.drawText(binding.tvCompanyName.text.toString(), 30f, 55f, paintWh)
+        c.drawText(companyName.uppercase(), 30f, 55f, paintWh)
         val infoSm = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 18f }
         val infoBig = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE; textSize = 26f; typeface = Typeface.DEFAULT_BOLD
@@ -160,12 +170,13 @@ class IdCardActivity : AppCompatActivity() {
         }
         if (qrBm != null) c.drawBitmap(qrBm, (w - 190).toFloat(), 80f, null)
         val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 16f }
-        c.drawText("Hype HR Management | Nexuzy Lab", 30f, (h - 20).toFloat(), fp)
+        // Footer uses real company name too
+        c.drawText("${companyName} | HR Management", 30f, (h - 20).toFloat(), fp)
         return bm
     }
 
-    private fun shareCard(uid: String) {
-        val bm   = buildCardBitmap()
+    private fun shareCard(uid: String, companyName: String) {
+        val bm   = buildCardBitmap(companyName)
         val file = File(cacheDir, "idcard_${uid}.png")
         FileOutputStream(file).use { bm.compress(Bitmap.CompressFormat.PNG, 100, it) }
         val uri  = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
@@ -177,9 +188,10 @@ class IdCardActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(intent, "Share ID Card"))
     }
 
-    private fun downloadCard(uid: String, employeeId: String) {
-        val bm       = buildCardBitmap()
-        val fileName = "HypeHR_IDCard_${employeeId}.png"
+    private fun downloadCard(uid: String, employeeId: String, companyName: String) {
+        val bm       = buildCardBitmap(companyName)
+        val safeComp = companyName.replace(" ", "_").replace(Regex("[^A-Za-z0-9_]"), "")
+        val fileName = "${safeComp}_IDCard_${employeeId}.png"
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 val values = android.content.ContentValues().apply {
