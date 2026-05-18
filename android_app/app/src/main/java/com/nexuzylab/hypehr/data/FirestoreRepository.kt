@@ -16,6 +16,19 @@ object FirestoreRepository {
 
     private val db = FirebaseFirestore.getInstance()
 
+    // ── Employee ──────────────────────────────────────────────────────────────
+
+    /**
+     * Fetches an employee document by Firebase Auth UID.
+     * Document ID = UID (set during employee creation).
+     */
+    suspend fun getEmployeeByUid(uid: String): Map<String, Any>? {
+        return try {
+            val doc = db.collection("employees").document(uid).get().await()
+            if (doc.exists()) doc.data else null
+        } catch (e: Exception) { null }
+    }
+
     // ── Attendance Stats ──────────────────────────────────────────────────────
 
     suspend fun getAttendanceStats(employeeId: String): Map<String, Any>? {
@@ -29,16 +42,6 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
-    /**
-     * Returns attendance log entries for a given employee filtered by month.
-     *
-     * Called by AttendanceHistoryActivity as:
-     *   getAttendanceHistory(session.getEmployeeId(), monthKey)
-     * where monthKey is a String like "2026-05".
-     *
-     * @param employeeId Firestore UID of the employee.
-     * @param monthKey   Month string in format "yyyy-MM" (e.g. "2026-05").
-     */
     suspend fun getAttendanceHistory(
         employeeId: String,
         monthKey: String = currentMonthKey()
@@ -55,10 +58,6 @@ object FirestoreRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    /**
-     * Logs an attendance entry when QR is scanned.
-     * Accepts both the named-arg style used by UI files and canonical params.
-     */
     suspend fun logAttendance(
         empId: String = "",
         action: String = "IN",
@@ -106,18 +105,6 @@ object FirestoreRepository {
 
     // ── Management / Security Users ───────────────────────────────────────────
 
-    /**
-     * Authenticates a management/security user against Firestore.
-     *
-     * Called by SecurityLoginActivity as:
-     *   FirestoreRepository.getManagementUser(username, password)
-     *
-     * Queries the `management_users` collection where:
-     *   username == supplied username AND password == supplied password
-     *   AND role in [security, supervisor, hr, manager, ca, admin]
-     *
-     * @return the user data map if found, null if credentials are wrong or role not allowed.
-     */
     suspend fun getManagementUser(
         username: String,
         password: String

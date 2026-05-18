@@ -8,8 +8,8 @@ import com.nexuzylab.hypehr.databinding.ActivityPinSetupBinding
 import com.nexuzylab.hypehr.utils.SessionManager
 
 /**
- * PIN Setup — shown once after first Firebase login.
- * Employee sets a 4-digit PIN for quick future logins.
+ * PIN Setup — shown once after first Firebase Auth login.
+ * Employee creates a 4-6 digit PIN for quick future access.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -24,19 +24,19 @@ class PinSetupActivity : AppCompatActivity() {
         setContentView(binding.root)
         session = SessionManager(this)
 
-        binding.tvEmpName.text = "Hello, ${session.getEmployeeName()}"
-        binding.tvSubtitle.text = "Set a 4-digit PIN to quickly access the app next time."
-
         binding.btnSetPin.setOnClickListener {
-            val pin     = binding.etPin.text.toString().trim()
-            val confirm = binding.etPinConfirm.text.toString().trim()
+            val pin     = binding.etNewPin.text.toString().trim()
+            val confirm = binding.etConfirmPin.text.toString().trim()
 
             when {
-                pin.length != 4 -> {
-                    binding.tilPin.error = "PIN must be exactly 4 digits"
+                pin.length < 4 -> {
+                    Toast.makeText(this, "PIN must be 4-6 digits", Toast.LENGTH_SHORT).show()
+                    binding.etNewPin.requestFocus()
                 }
                 pin != confirm -> {
-                    binding.tilPinConfirm.error = "PINs do not match"
+                    Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
+                    binding.etConfirmPin.setText("")
+                    binding.etConfirmPin.requestFocus()
                 }
                 else -> {
                     session.savePin(pin)

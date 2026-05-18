@@ -9,7 +9,7 @@ import com.nexuzylab.hypehr.utils.SessionManager
 
 /**
  * PIN Login — shown after first-time PIN setup.
- * Employee enters 4-digit PIN to unlock app.
+ * Employee enters PIN to unlock the app quickly.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -26,10 +26,10 @@ class PinLoginActivity : AppCompatActivity() {
 
         binding.tvEmpName.text = "Welcome, ${session.getEmployeeName()}"
 
-        binding.btnPinLogin.setOnClickListener {
+        binding.btnEnterPin.setOnClickListener {
             val entered = binding.etPin.text.toString().trim()
-            if (entered.length != 4) {
-                binding.tilPin.error = "Enter 4-digit PIN"
+            if (entered.length < 4) {
+                Toast.makeText(this, "Enter your PIN (4-6 digits)", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             if (session.verifyPin(entered)) {
@@ -39,16 +39,18 @@ class PinLoginActivity : AppCompatActivity() {
                 )
                 finish()
             } else {
-                binding.tilPin.error = "Wrong PIN. Try again."
+                Toast.makeText(this, "Wrong PIN. Try again.", Toast.LENGTH_SHORT).show()
                 binding.etPin.setText("")
             }
         }
 
-        binding.tvForgotPin.setOnClickListener {
-            // Clear session and go back to login
-            session.clearPinOnly()
-            startActivity(Intent(this, LoginActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK))
+        // "Use Username & Password instead" — clears PIN and goes back to email login
+        binding.tvLoginWithPassword.setOnClickListener {
+            session.clearPin()
+            startActivity(
+                Intent(this, LoginActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
             finish()
         }
     }

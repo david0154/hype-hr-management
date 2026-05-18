@@ -14,11 +14,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 /**
- * Hype HR Management — Security / Supervisor Login
+ * Hype HR — Security / Supervisor Login
  *
- * Two-step login:
- * 1. Firebase Auth (email + password) — same auth as employee
- * 2. Firestore `employees` doc — role must be security / supervisor / hr / manager / ca
+ * Uses Firebase Auth (email + password) then checks the employee's
+ * `role` field in Firestore. Allowed roles: security, supervisor,
+ * hr, manager, ca, admin.
  *
  * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
@@ -34,11 +34,7 @@ class SecurityLoginActivity : AppCompatActivity() {
         setContentView(binding.root)
         session = SessionManager(this)
 
-        // Already logged in as security/supervisor
-        if (session.isSecurityMode()) {
-            goToDashboard()
-            return
-        }
+        if (session.isSecurityMode()) { goToDashboard(); return }
 
         setSupportActionBar(binding.toolbar)
         supportActionBar?.title = "Security / Supervisor Login"
@@ -64,23 +60,21 @@ class SecurityLoginActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 // Step 1: Firebase Auth
-                val authResult = auth.signInWithEmailAndPassword(email, password).await()
-                val uid = authResult.user?.uid
-                    ?: throw Exception("Auth succeeded but UID is null")
+                val result = auth.signInWithEmailAndPassword(email, password).await()
+                val uid = result.user?.uid ?: throw Exception("Auth succeeded but UID is null")
 
-                // Step 2: Fetch employee document and check role
+                // Step 2: Load employee Firestore document by UID
                 val empDoc = FirestoreRepository.getEmployeeByUid(uid)
 
                 val allowedRoles = setOf("security", "supervisor", "hr", "manager", "ca", "admin")
                 val role = (empDoc?.get("role") as? String)?.lowercase()?.trim() ?: ""
 
                 if (empDoc == null || role !in allowedRoles) {
-                    // Sign out — employee role not allowed here
                     auth.signOut()
                     runOnUiThread {
                         binding.progressSec.visibility = View.GONE
                         binding.btnSecLogin.isEnabled  = true
-                        binding.tilSecPassword.error   = "Access denied. Role '$role' not allowed here."
+                        binding.tilSecPassword.error   = "Role '$role' not allowed here."
                         Toast.makeText(
                             this@SecurityLoginActivity,
                             "This account does not have security/supervisor access.",
@@ -90,23 +84,23 @@ class SecurityLoginActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // Step 3: Save session and go to dashboard
+                // Step 3: Save session
                 val name = empDoc["name"] as? String ?: email
+                val empId = empDoc["employee_id"] as? String ?: uid
                 runOnUiThread {
                     binding.progressSec.visibility = View.GONE
                     binding.btnSecLogin.isEnabled  = true
                     session.saveSecurityUser(email, role)
-                    session.saveEmployeeSession(
-                        uid  = uid,
-                        name = name,
+                    session.saveSession(
+                        uid         = uid,
+                        email       = email,
+                        name        = name,
+                        employeeId  = empId,
                         designation = role,
-                        employeeId  = empDoc["employee_id"] as? String ?: uid
+                        role        = role
                     )
-                    Toast.makeText(
-                        this@SecurityLoginActivity,
-                        "Welcome, $name ($role)",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this@SecurityLoginActivity,
+                        "Welcome, $name ($role)", Toast.LENGTH_SHORT).show()
                     goToDashboard()
                 }
 
@@ -119,7 +113,7 @@ class SecurityLoginActivity : AppCompatActivity() {
                             "No account found with this email."
                         e.message?.contains("password is invalid", true) == true ||
                         e.message?.contains("INVALID_LOGIN_CREDENTIALS", true) == true ->
-                            "Wrong password. Please try again."
+                            "Wrong password."
                         e.message?.contains("network", true) == true ->
                             "No internet connection."
                         else -> e.message ?: "Login failed"
@@ -132,10 +126,8 @@ class SecurityLoginActivity : AppCompatActivity() {
     }
 
     private fun goToDashboard() {
-        startActivity(
-            Intent(this, SecurityDashboardActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        )
+        startActivity(Intent(this, SecurityDashboardActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
         finish()
     }
 
