@@ -27,14 +27,9 @@ import java.util.concurrent.Executors
  * SecurityScanActivity — QR scanner for security / supervisor / manager.
  * Marks employees IN or OUT by scanning their ID-card QR code.
  *
- * QR format expected:  HYPE_EMP|EMP-0001|EmployeeName|username|company
- *
- * FIXES applied:
- *  - BarcodeScanner created ONCE as a member field (not per-frame → memory/perf fix)
- *  - cameraProvider stored as member field; analyseQr no longer takes it as param
- *  - Role guard accepts isSecurityMode() OR (isLoggedIn() + valid role) so
- *    security users who logged in via SecurityLoginActivity always pass
- *  - Proper scanner.close() in onDestroy
+ * Supported QR formats:
+ *   PRIMARY:  HYPE_EMP|EMP-0001|Ravi Kumar|ravikumar|HYPE
+ *   LEGACY:   EMP:EMP-0001   (old format — still accepted for already-printed cards)
  *
  * @author  David | Nexuzy Lab
  */
@@ -44,7 +39,7 @@ class SecurityScanActivity : AppCompatActivity() {
     private lateinit var session: SessionManager
     private lateinit var cameraExecutor: ExecutorService
 
-    // ── BarcodeScanner created ONCE ────────────────────────────────────────
+    // BarcodeScanner created ONCE — not per-frame
     private val barcodeScanner: BarcodeScanner by lazy { BarcodeScanning.getClient() }
 
     private var cameraProvider: ProcessCameraProvider? = null
@@ -67,8 +62,7 @@ class SecurityScanActivity : AppCompatActivity() {
         setContentView(binding.root)
         session = SessionManager(this)
 
-        // Role guard — accept security mode OR a logged-in user with a valid role
-        val role = session.getRole().lowercase().trim()
+        val role    = session.getRole().lowercase().trim()
             .ifBlank { session.getSecurityRole().lowercase().trim() }
         val allowed = setOf("security", "supervisor", "manager", "hr", "admin", "super_admin", "ca")
         val authorised = session.isSecurityMode() || (session.isLoggedIn() && role in allowed)
@@ -115,9 +109,7 @@ class SecurityScanActivity : AppCompatActivity() {
                     this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyser
                 )
             }.onFailure {
-                runOnUiThread {
-                    binding.tvStatus.text = "Camera error: ${it.message}"
-                }
+                runOnUiThread { binding.tvStatus.text = "Camera error: ${it.message}" }
             }
         }, ContextCompat.getMainExecutor(this))
     }
@@ -133,27 +125,42 @@ class SecurityScanActivity : AppCompatActivity() {
             mediaImage, imageProxy.imageInfo.rotationDegrees
         )
 
-        // Use the single shared BarcodeScanner instance — not a new client each frame
         barcodeScanner.process(image)
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
+                    if (barcode.format != Barcode.FORMAT_QR_CODE) continue
                     val raw = barcode.rawValue ?: continue
-                    if (barcode.format == Barcode.FORMAT_QR_CODE &&
-                        raw.startsWith("HYPE_EMP|")) {
+
+                    val result: Triple<String, String, String>? = when {
+                        // PRIMARY format: HYPE_EMP|EMP-0001|Name|username|Company
+                        raw.startsWith("HYPE_EMP|") -> {
+                            val p = raw.split("|")
+                            val empId   = p.getOrElse(1) { "" }
+                            val empName = p.getOrElse(2) { empId }
+                            val company = p.getOrElse(4) { "HYPE" }
+                            if (empId.isNotBlank()) Triple(empId, empName, "${company.uppercase()} Gate")
+                            else null
+                        }
+                        // LEGACY format: EMP:EMP-0001  (old printed cards)
+                        raw.startsWith("EMP:") -> {
+                            val empId = raw.removePrefix("EMP:").trim()
+                            if (empId.isNotBlank()) Triple(empId, empId, "Hype Gate")
+                            else null
+                        }
+                        else -> null
+                    }
+
+                    if (result != null) {
                         processed = true
-                        // Stop camera on main thread
                         runOnUiThread { cameraProvider?.unbindAll() }
-                        val parts   = raw.split("|")
-                        val empId   = parts.getOrNull(1) ?: ""
-                        val empName = parts.getOrNull(2) ?: "Employee"
-                        val company = parts.getOrNull(4) ?: "Hype"
-                        handleEmployeeScan(empId, empName, "${company.uppercase()} Gate")
+                        val (empId, empName, location) = result
+                        handleEmployeeScan(empId, empName, location)
                         break
                     }
                 }
             }
             .addOnFailureListener { /* ignore per-frame failures */ }
-            .addOnCompleteListener { imageProxy.close() }   // ALWAYS close proxy
+            .addOnCompleteListener { imageProxy.close() }  // always close
     }
 
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
@@ -183,10 +190,9 @@ class SecurityScanActivity : AppCompatActivity() {
                 } else {
                     binding.tvStatus.text =
                         "❌ Failed to save attendance.\n" +
-                        "Check Firestore rules — attendance_logs must allow write\n" +
-                        "for authenticated users. See README_SECURITY_SETUP.md"
-                    processed = false  // allow retry
-                    // Restart camera for retry
+                        "Check Firestore rules — attendance_logs must allow\n" +
+                        "write for authenticated users."
+                    processed = false
                     startCamera()
                 }
             }
@@ -196,7 +202,7 @@ class SecurityScanActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
     override fun onDestroy() {
-        barcodeScanner.close()   // release ML Kit resources
+        barcodeScanner.close()
         cameraExecutor.shutdown()
         super.onDestroy()
     }

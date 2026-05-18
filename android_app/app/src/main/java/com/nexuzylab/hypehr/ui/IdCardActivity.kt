@@ -18,12 +18,14 @@ import java.io.FileOutputStream
 
 /**
  * IdCardActivity — Generates and displays the employee ID card.
- * FIX: Was calling db.collection("employees").document(empId) where empId was the
- *      Firebase Auth UID (correct). But if intent passed "employee_id" (EMP-0001)
- *      instead of uid, the doc lookup would fail silently.
- *      Fix: try uid first, fallback to whereEqualTo("employee_id") query.
- * FIX: downloadCard uses getExternalStoragePublicDirectory which needs
- *      WRITE_EXTERNAL_STORAGE permission on Android < 10. Added MediaStore API fallback.
+ *
+ * QR format (FIXED): HYPE_EMP|<employee_id>|<name>|<username>|<company>
+ *   e.g.  HYPE_EMP|EMP-0001|Ravi Kumar|ravikumar|HYPE
+ *
+ * SecurityScanActivity parses this format to extract employee details.
+ * Previously the QR was encoded as "EMP:EMP-0001" which SecurityScanActivity
+ * could never parse — now both sides use the same format.
+ *
  * Developed by David | Nexuzy Lab
  */
 class IdCardActivity : AppCompatActivity() {
@@ -39,7 +41,6 @@ class IdCardActivity : AppCompatActivity() {
         setContentView(binding.root)
         supportActionBar?.title = "Employee ID Card"
 
-        // Accept either uid or employee_id from intent
         val empIdOrUid = intent.getStringExtra("employee_id")
             ?: FirebaseAuth.getInstance().currentUser?.uid
         if (empIdOrUid == null) {
@@ -50,10 +51,6 @@ class IdCardActivity : AppCompatActivity() {
         loadEmployee(empIdOrUid)
     }
 
-    /**
-     * FIX: Try direct document lookup first (works when empIdOrUid is a Firebase UID).
-     * If doc doesn't exist, fallback to whereEqualTo("employee_id") for EMP-XXXX format.
-     */
     private fun loadEmployee(empIdOrUid: String) {
         db.collection("employees").document(empIdOrUid).get()
             .addOnSuccessListener { doc ->
@@ -61,11 +58,9 @@ class IdCardActivity : AppCompatActivity() {
                     resolvedUid = doc.id
                     renderFromDoc(doc)
                 } else {
-                    // Fallback: search by employee_id field (EMP-0001 format)
                     db.collection("employees")
                         .whereEqualTo("employee_id", empIdOrUid)
-                        .limit(1)
-                        .get()
+                        .limit(1).get()
                         .addOnSuccessListener { snap ->
                             val fallbackDoc = snap.documents.firstOrNull()
                             if (fallbackDoc == null || !fallbackDoc.exists()) {
@@ -91,21 +86,22 @@ class IdCardActivity : AppCompatActivity() {
         val name        = doc.getString("name")        ?: "N/A"
         val employeeId  = doc.getString("employee_id") ?: doc.id
         val designation = doc.getString("designation") ?: "Employee"
+        val username    = doc.getString("username")    ?: employeeId
         val aadhaar     = doc.getString("aadhaar")     ?: ""
         val maskedAadh  = if (aadhaar.length >= 4) "XXXX-XXXX-${aadhaar.takeLast(4)}" else "—"
 
         db.collection("settings").document("company").get()
             .addOnSuccessListener { company ->
                 val companyName = company.getString("name") ?: "Hype Pvt Ltd"
-                renderCard(resolvedUid, employeeId, name, designation, maskedAadh, companyName)
+                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, companyName)
             }
             .addOnFailureListener {
-                renderCard(resolvedUid, employeeId, name, designation, maskedAadh, "Hype Pvt Ltd")
+                renderCard(resolvedUid, employeeId, name, username, designation, maskedAadh, "Hype Pvt Ltd")
             }
     }
 
     private fun renderCard(
-        uid: String, employeeId: String, name: String,
+        uid: String, employeeId: String, name: String, username: String,
         designation: String, aadhaar: String, companyName: String
     ) {
         binding.tvCompanyName.text = companyName.uppercase()
@@ -114,9 +110,14 @@ class IdCardActivity : AppCompatActivity() {
         binding.tvDesignation.text = designation
         binding.tvAadhaar.text     = aadhaar
 
+        // QR content format: HYPE_EMP|<id>|<name>|<username>|<company>
+        // SecurityScanActivity splits on '|' to read each field
+        val companySlug = companyName.replace(" ", "").uppercase().take(10)
+        val qrContent   = "HYPE_EMP|$employeeId|$name|$username|$companySlug"
+
         try {
             val encoder = BarcodeEncoder()
-            val bitmap  = encoder.encodeBitmap("EMP:$employeeId", BarcodeFormat.QR_CODE, 300, 300)
+            val bitmap  = encoder.encodeBitmap(qrContent, BarcodeFormat.QR_CODE, 300, 300)
             binding.ivQrCode.setImageBitmap(bitmap)
         } catch (e: WriterException) {
             Log.e(TAG, "QR generation failed: ${e.message}")
@@ -176,10 +177,6 @@ class IdCardActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(intent, "Share ID Card"))
     }
 
-    /**
-     * FIX: Use MediaStore API for Android 10+ to avoid WRITE_EXTERNAL_STORAGE crash.
-     * Falls back to legacy path for Android 9 and below.
-     */
     private fun downloadCard(uid: String, employeeId: String) {
         val bm       = buildCardBitmap()
         val fileName = "HypeHR_IDCard_${employeeId}.png"
