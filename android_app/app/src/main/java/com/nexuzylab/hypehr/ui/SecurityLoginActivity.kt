@@ -28,10 +28,10 @@ import kotlinx.coroutines.tasks.await
  *
  *   match /security_users/{uid} {
  *     allow read: if request.auth != null && request.auth.uid == uid;
- *     allow write: if false;  // only Python admin app writes via service account
+ *     allow write: if false;
  *   }
  *   match /admin_users/{docId} {
- *     allow read: if request.auth != null;  // or lock down further if you want
+ *     allow read: if request.auth != null;
  *   }
  *   match /attendance_logs/{docId} {
  *     allow read, write: if request.auth != null;
@@ -82,8 +82,7 @@ class SecurityLoginActivity : AppCompatActivity() {
                 val result = auth.signInWithEmailAndPassword(email, password).await()
                 val uid    = result.user?.uid ?: throw Exception("Auth succeeded but UID is null")
 
-                // Step 2: Look up user data — try multiple collections in order
-                // Priority: security_users (user-readable) → admin_users → employees
+                // Step 2: Look up user data — security_users → admin_users → employees
                 val resolvedData = getSecurityUser(uid, email)
 
                 val allowedRoles = setOf("security", "supervisor", "hr", "manager", "ca", "admin", "super_admin")
@@ -94,7 +93,7 @@ class SecurityLoginActivity : AppCompatActivity() {
                     val detail = if (resolvedData == null)
                         "Account not found in security_users, admin_users, or employees."
                     else
-                        "Role '$role' is not authorised for security access. Allowed: ${allowedRoles.joinToString()}."
+                        "Role '$role' is not authorised. Allowed: ${allowedRoles.joinToString()}."
                     runOnUiThread {
                         binding.progressSec.visibility = View.GONE
                         binding.btnSecLogin.isEnabled  = true
@@ -104,31 +103,27 @@ class SecurityLoginActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // Resolve display name and employee ID
-                val name  = listOf("display_name", "name", "full_name")
-                    .mapNotNull { resolvedData[it] as? String }
-                    .firstOrNull { it.isNotBlank() } ?: email
-                val empId = listOf("employee_id", "emp_id", "username")
-                    .mapNotNull { resolvedData[it] as? String }
-                    .firstOrNull { it.isNotBlank() } ?: uid
+                val name    = listOf("display_name", "name", "full_name")
+                    .mapNotNull { resolvedData[it] as? String }.firstOrNull { it.isNotBlank() } ?: email
+                val empId   = listOf("employee_id", "emp_id", "username")
+                    .mapNotNull { resolvedData[it] as? String }.firstOrNull { it.isNotBlank() } ?: uid
                 val company = (resolvedData["company"] as? String)?.ifBlank { null } ?: "Hype Pvt Ltd"
 
                 runOnUiThread {
                     binding.progressSec.visibility = View.GONE
                     binding.btnSecLogin.isEnabled  = true
 
-                    // Save both session types so isSecurityMode() AND isLoggedIn() return true
                     session.saveSecurityUser(username = name, email = email, role = role)
+                    // Pass company via companyName param — SessionManager.saveSession() supports it
                     session.saveSession(
                         uid         = uid,
                         email       = email,
                         name        = name,
                         employeeId  = empId,
                         designation = role,
-                        role        = role
+                        role        = role,
+                        companyName = company
                     )
-                    // Also save company so dashboard can show it
-                    session.saveCompanyName(company)
 
                     Toast.makeText(this@SecurityLoginActivity,
                         "Welcome, $name ($role)", Toast.LENGTH_SHORT).show()
@@ -136,10 +131,9 @@ class SecurityLoginActivity : AppCompatActivity() {
                 }
 
             } catch (e: FirebaseFirestoreException) {
-                // Firestore PERMISSION_DENIED means rules are not set up yet
                 val msg = when (e.code) {
                     FirebaseFirestoreException.Code.PERMISSION_DENIED ->
-                        "Firestore rules deny read. Add security_users read rule for authenticated users. See README_SECURITY_SETUP.md."
+                        "Firestore rules deny read. Add security_users read rule. See README_SECURITY_SETUP.md."
                     else -> "Firestore error: ${e.message}"
                 }
                 runOnUiThread { showError(msg) }
@@ -170,51 +164,46 @@ class SecurityLoginActivity : AppCompatActivity() {
     }
 
     /**
-     * Attempts to read the security user's profile from Firestore.
      * Tries collections in order:
-     *   1. security_users/{uid}            — cleanest, add Firestore rule: allow read if auth.uid == uid
-     *   2. admin_users/{uid}               — legacy direct doc
+     *   1. security_users/{uid}  — recommended (add Firestore rule: allow read if auth.uid == uid)
+     *   2. admin_users/{uid}     — legacy direct doc
      *   3. admin_users where uid field == uid
      *   4. admin_users where firebase_uid field == uid
      *   5. admin_users where email field == email
-     *   6. employees (via FirestoreRepository) — for manager/hr who are also employees
-     *
-     * Each step catches PERMISSION_DENIED silently and moves to the next.
+     *   6. employees (FirestoreRepository) — for manager/hr who are also employees
      */
     private suspend fun getSecurityUser(uid: String, email: String): Map<String, Any>? {
 
-        // 1. security_users/{uid} — the recommended collection
         safeGet { db.collection("security_users").document(uid).get().await() }
             ?.takeIf { it.exists() }?.data?.let { return it }
 
-        // 2. admin_users/{uid} — direct doc where doc ID == uid
         safeGet { db.collection("admin_users").document(uid).get().await() }
             ?.takeIf { it.exists() }?.data?.let { return it }
 
-        // 3. admin_users where uid field matches
         safeQuery {
             db.collection("admin_users").whereEqualTo("uid", uid).limit(1).get().await()
         }?.let { return it }
 
-        // 4. admin_users where firebase_uid field matches
         safeQuery {
             db.collection("admin_users").whereEqualTo("firebase_uid", uid).limit(1).get().await()
         }?.let { return it }
 
-        // 5. admin_users where email field matches
         safeQuery {
             db.collection("admin_users").whereEqualTo("email", email).limit(1).get().await()
         }?.let { return it }
 
-        // 6. employees fallback (manager/hr)
         return try { FirestoreRepository.getEmployeeByUid(uid) } catch (e: Exception) { null }
     }
 
-    private suspend fun safeGet(block: suspend () -> com.google.firebase.firestore.DocumentSnapshot?): com.google.firebase.firestore.DocumentSnapshot? {
+    private suspend fun safeGet(
+        block: suspend () -> com.google.firebase.firestore.DocumentSnapshot?
+    ): com.google.firebase.firestore.DocumentSnapshot? {
         return try { block() } catch (e: Exception) { null }
     }
 
-    private suspend fun safeQuery(block: suspend () -> com.google.firebase.firestore.QuerySnapshot): Map<String, Any>? {
+    private suspend fun safeQuery(
+        block: suspend () -> com.google.firebase.firestore.QuerySnapshot
+    ): Map<String, Any>? {
         return try {
             val qs = block()
             if (!qs.isEmpty) qs.documents.first().data else null
