@@ -1,11 +1,12 @@
 """
 QR Code Generator — Hype HR Management
-Generates: Location QR (fixed) and Employee ID Card QR
+Location QR encodes: HYPE_LOC|<location_name>
+Employee QR encodes: employee_id string
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import qrcode, json
+import qrcode
 from PIL import Image, ImageTk
 from utils.firebase_config import get_db
 
@@ -24,8 +25,8 @@ class QRGeneratorModule:
     def _build_ui(self):
         nb = ttk.Notebook(self.parent)
         nb.pack(fill="both", expand=True, padx=10, pady=10)
-        loc_f = tk.Frame(nb, bg="#0d1b2a"); nb.add(loc_f, text="📍 Location QR")
-        emp_f = tk.Frame(nb, bg="#0d1b2a"); nb.add(emp_f, text="👤 Employee QR")
+        loc_f = tk.Frame(nb, bg="#0d1b2a"); nb.add(loc_f, text="\U0001f4cd Location QR")
+        emp_f = tk.Frame(nb, bg="#0d1b2a"); nb.add(emp_f, text="\U0001f464 Employee QR")
         self._build_location_tab(loc_f)
         self._build_employee_tab(emp_f)
 
@@ -44,11 +45,16 @@ class QRGeneratorModule:
         self.loc_company_var = tk.StringVar(value=self.current_user.get("company", "hype"))
         tk.Entry(form, textvariable=self.loc_company_var, bg="#1e3a5f", fg="white",
                  insertbackground="white", width=24).grid(row=2, column=1, padx=10)
+
+        # Preview label showing what will be encoded
+        self.loc_preview_lbl = tk.Label(parent, bg="#0d1b2a", fg="#f77f00", font=("Arial", 10))
+        self.loc_preview_lbl.pack(pady=4)
+
         tk.Button(parent, text="Generate QR Code", bg="#f77f00", fg="white",
                   font=("Arial", 11, "bold"), relief="flat", padx=15, pady=8,
-                  cursor="hand2", command=self._gen_location).pack(pady=15)
+                  cursor="hand2", command=self._gen_location).pack(pady=10)
         self.loc_qr_label = tk.Label(parent, bg="#0d1b2a"); self.loc_qr_label.pack()
-        tk.Button(parent, text="💾 Save QR", bg="#1e6f9f", fg="white", relief="flat",
+        tk.Button(parent, text="\U0001f4be Save QR", bg="#1e6f9f", fg="white", relief="flat",
                   command=lambda: self._save("location")).pack(pady=5)
 
     def _build_employee_tab(self, parent):
@@ -65,7 +71,7 @@ class QRGeneratorModule:
         self.emp_qr_label = tk.Label(parent, bg="#0d1b2a"); self.emp_qr_label.pack()
         self.emp_info_lbl = tk.Label(parent, bg="#0d1b2a", fg="#ccc", font=("Arial", 10))
         self.emp_info_lbl.pack()
-        tk.Button(parent, text="💾 Save QR", bg="#1e6f9f", fg="white", relief="flat",
+        tk.Button(parent, text="\U0001f4be Save QR", bg="#1e6f9f", fg="white", relief="flat",
                   command=lambda: self._save("employee")).pack(pady=5)
 
     def _make_qr(self, data: str) -> Image.Image:
@@ -75,31 +81,51 @@ class QRGeneratorModule:
         return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
     def _gen_location(self):
-        data = {"type": "location", "location_type": self.loc_type_var.get(),
-                "location_name": self.loc_name_var.get(),
-                "company": self.loc_company_var.get()}
-        self._last_location_qr = self._make_qr(json.dumps(data))
+        loc_name = self.loc_name_var.get().strip()
+        if not loc_name:
+            messagebox.showerror("Error", "Enter a Location Name.")
+            return
+        # Encode as plain HYPE_LOC|<name> — matches AttendanceActivity parser
+        qr_data = f"HYPE_LOC|{loc_name}"
+        self.loc_preview_lbl.config(text=f"Encodes: {qr_data}")
+        self._last_location_qr = self._make_qr(qr_data)
         img = ImageTk.PhotoImage(self._last_location_qr.resize((240, 240)))
         self.loc_qr_label.config(image=img); self.loc_qr_label.image = img
-        get_db().collection("location_qrs").add(data)
+        # Save metadata to Firestore for reference
+        get_db().collection("location_qrs").add({
+            "location_name": loc_name,
+            "location_type": self.loc_type_var.get(),
+            "company": self.loc_company_var.get(),
+            "qr_data": qr_data
+        })
 
     def _gen_employee(self):
         emp_id = self.emp_qr_id_var.get().strip()
-        if not emp_id: messagebox.showerror("Error", "Enter Employee ID."); return
+        if not emp_id:
+            messagebox.showerror("Error", "Enter Employee ID.")
+            return
         emp_doc = get_db().collection("employees").document(emp_id).get()
-        if not emp_doc.exists: messagebox.showerror("Error", f"{emp_id} not found."); return
+        if not emp_doc.exists:
+            messagebox.showerror("Error", f"{emp_id} not found.")
+            return
         emp = emp_doc.to_dict()
-        data = {"type": "employee", "employee_id": emp_id,
-                "name": emp.get("name", ""), "company": emp.get("company", "hype")}
-        self._last_employee_qr = self._make_qr(json.dumps(data))
+        # Encode as plain employee_id string
+        qr_data = emp_id
+        self._last_employee_qr = self._make_qr(qr_data)
         img = ImageTk.PhotoImage(self._last_employee_qr.resize((240, 240)))
         self.emp_qr_label.config(image=img); self.emp_qr_label.image = img
-        self.emp_info_lbl.config(text=f"{emp.get('name','')} | {emp_id}")
+        self.emp_info_lbl.config(text=f"{emp.get('name', '')} | {emp_id}")
 
     def _save(self, qr_type: str):
         img = getattr(self, f"_last_{qr_type}_qr", None)
-        if img is None: messagebox.showinfo("Info", "Generate a QR first."); return
-        path = filedialog.asksaveasfilename(defaultextension=".png",
-                                            filetypes=[("PNG", "*.png")],
-                                            initialfile=f"{qr_type}_qr.png")
-        if path: img.save(path); messagebox.showinfo("Saved", f"QR saved to {path}")
+        if img is None:
+            messagebox.showinfo("Info", "Generate a QR first.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png")],
+            initialfile=f"{qr_type}_qr.png"
+        )
+        if path:
+            img.save(path)
+            messagebox.showinfo("Saved", f"QR saved to {path}")
