@@ -1,7 +1,14 @@
 /**
  * Hype HR Management — Security ViewModel
- * Looks up employee by ID, marks attendance on their behalf,
- * and loads today's all-employee scan logs for dashboard.
+ *
+ * FIX: loadTodayAllLogs was querying attendance_logs using string comparison
+ *      on `timestamp` field, but FirestoreRepository writes `timestamp` as
+ *      a Firestore Timestamp object. String comparison on a Timestamp field
+ *      always returns 0 results — that is why "Today's scans" was always empty.
+ *
+ *      Fix: query by `date` == todayDateKey() (a plain string field that IS
+ *      stored as a string) and sort by `timestamp` Firestore Timestamp.
+ *      This is reliable, fast, and matches what logAttendance() writes.
  *
  * @author  David | Nexuzy Lab
  */
@@ -9,8 +16,11 @@ package com.nexuzylab.hypehr.ui.security
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.nexuzylab.hypehr.data.FirebaseRepository
+import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.model.AttendanceLog
 import com.nexuzylab.hypehr.model.AttendanceSession
 import com.nexuzylab.hypehr.model.Employee
@@ -49,21 +59,52 @@ class SecurityViewModel : ViewModel() {
         }
     }
 
-    /** Load ALL attendance logs for today (all employees) for the dashboard recent list. */
+    /**
+     * Load ALL attendance logs for today (all employees) for the dashboard recent list.
+     *
+     * FIX: Previously used whereGreaterThanOrEqualTo / whereLessThanOrEqualTo on the
+     * `timestamp` field (Firestore Timestamp type) but compared it to plain strings like
+     * "2026-05-18 00:00:00" — Firestore rejects mixed-type comparisons and returns
+     * nothing. Now uses whereEqualTo("date", today) which is always a plain String field.
+     */
     fun loadTodayAllLogs(callback: (List<AttendanceLog>) -> Unit) {
         viewModelScope.launch {
             try {
-                val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                val snap  = db.collection("attendance_logs")
-                    .whereGreaterThanOrEqualTo("timestamp", "$today 00:00:00")
-                    .whereLessThanOrEqualTo("timestamp",   "$today 23:59:59")
+                val today = FirestoreRepository.todayDateKey()   // "yyyy-MM-dd" IST
+
+                val snap = db.collection("attendance_logs")
+                    .whereEqualTo("date", today)                 // `date` is stored as String
+                    .orderBy("timestamp", Query.Direction.DESCENDING)
+                    .limit(50)
                     .get().await()
-                val logs = snap.documents
-                    .mapNotNull { it.toObject(AttendanceLog::class.java) }
-                    .sortedByDescending { it.timestamp }
-                    .take(30)
+
+                val logs = snap.documents.mapNotNull { doc ->
+                    val data = doc.data ?: return@mapNotNull null
+                    // Build AttendanceLog manually from Map to handle both
+                    // Timestamp objects and string timestamps gracefully
+                    val tsField = data["timestamp"]
+                    val tsStr = when (tsField) {
+                        is Timestamp -> {
+                            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
+                            sdf.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+                            sdf.format(tsField.toDate())
+                        }
+                        is String    -> tsField
+                        else         -> ""
+                    }
+                    AttendanceLog(
+                        employee_id = (data["employee_id"] as? String) ?: "",
+                        name        = (data["emp_name"]    as? String)
+                            ?: (data["name"] as? String) ?: "",
+                        action      = ((data["action"] ?: data["type"]) as? String) ?: "",
+                        timestamp   = tsStr,
+                        location    = (data["location"]   as? String) ?: "",
+                        scanned_by  = (data["scanned_by"] as? String) ?: ""
+                    )
+                }
                 callback(logs)
             } catch (e: Exception) {
+                android.util.Log.e("SecurityVM", "loadTodayAllLogs failed: ${e.message}")
                 callback(emptyList())
             }
         }

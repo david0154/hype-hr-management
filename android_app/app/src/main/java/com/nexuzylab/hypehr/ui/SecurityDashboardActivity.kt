@@ -19,15 +19,11 @@ import java.util.Locale
 /**
  * SecurityDashboardActivity — Security / Supervisor Dashboard
  *
- * FIX: Package is com.nexuzylab.hypehr.ui (NOT ui.security) so that
- *      LoginActivity, SecurityLoginActivity, SplashActivity can all
- *      reference it without an "Unresolved reference" error.
+ * FIX: Always reload today's scans in onResume() — previously it only
+ *      reloaded when returnedFromScan=true, but that flag was never set
+ *      when arriving from a back-press or cold start, so the list stayed empty.
  *
- * FIX: Company name loaded from Firestore settings/company.
- *      No more hardcoded "Hype Pvt Ltd".
- *
- * SecurityViewModel and SecurityLogsAdapter live in ui.security sub-package
- * and are imported normally.
+ * FIX: Company name loaded from Firestore settings/company (no hardcoding).
  *
  * Developed by David | Nexuzy Lab
  */
@@ -37,8 +33,6 @@ class SecurityDashboardActivity : AppCompatActivity() {
     private lateinit var vm: SecurityViewModel
     private lateinit var session: SessionManager
     private val db = FirebaseFirestore.getInstance()
-
-    private var returnedFromScan = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,7 +58,6 @@ class SecurityDashboardActivity : AppCompatActivity() {
         binding.tvTodayDate.text =
             SimpleDateFormat("EEEE, dd MMM yyyy", Locale.getDefault()).format(Date())
 
-        // Load company name from Firestore — NOT hardcoded
         loadCompanyName()
 
         binding.btnMarkIn.setOnClickListener  { openScanner("IN")  }
@@ -76,15 +69,13 @@ class SecurityDashboardActivity : AppCompatActivity() {
         }
 
         binding.rvRecentLogs.layoutManager = LinearLayoutManager(this)
-        loadTodayStats()
     }
 
+    // FIX: ALWAYS reload today's scans when dashboard becomes visible
+    // (covers: returning from scanner, cold start, back-press, notification tap)
     override fun onResume() {
         super.onResume()
-        if (returnedFromScan) {
-            returnedFromScan = false
-            loadTodayStats()
-        }
+        loadTodayStats()
     }
 
     private fun loadCompanyName() {
@@ -100,7 +91,6 @@ class SecurityDashboardActivity : AppCompatActivity() {
     }
 
     private fun openScanner(action: String) {
-        returnedFromScan = true
         SecurityScanActivity.start(this, action)
     }
 
