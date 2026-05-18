@@ -27,17 +27,7 @@ import java.util.concurrent.Executors
 
 /**
  * AttendanceActivity — Smart QR attendance
- *
- * Flow:
- *   1. Employee opens screen → camera auto-starts, buttons hidden
- *   2. Employee scans office QR code
- *   3. After successful QR scan → Firestore is checked for today’s status:
- *        - Not checked in yet  → show only ✅ CHECK IN  button
- *        - Already checked in  → show only 🔴 CHECK OUT button
- *        - Already checked out → show “Attendance complete” message, no buttons
- *   4. Employee taps the shown button → saved to Firestore
- *
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * Developed by David | Nexuzy Lab
  */
 class AttendanceActivity : AppCompatActivity() {
 
@@ -47,16 +37,13 @@ class AttendanceActivity : AppCompatActivity() {
     private var scannedLocation: String? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var scanningActive = false
-
-    // Today’s status fetched from Firestore after QR scan
-    // "NONE" | "IN" | "COMPLETE"
     private var todayStatus = "NONE"
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) startCamera()
-        else Toast.makeText(this, "Camera permission is required to scan QR", Toast.LENGTH_LONG).show()
+        else Toast.makeText(this, "Camera permission required", Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,21 +57,15 @@ class AttendanceActivity : AppCompatActivity() {
         supportActionBar?.title = "Mark Attendance"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
-        // Load employee name, id, photo from Firestore
         loadEmployeeInfo()
-
-        // Initially hide both action buttons — shown only AFTER QR verified
         hideActionButtons()
         binding.tvStatus.text = "📷 Point camera at the office QR code"
         binding.btnScanQr.setOnClickListener { restartScan() }
         binding.btnIn.setOnClickListener  { markAttendance("IN") }
         binding.btnOut.setOnClickListener { markAttendance("OUT") }
 
-        // Auto-start camera immediately
         requestCamera()
     }
-
-    // ── Employee Info + Photo ─────────────────────────────────────────
 
     private fun loadEmployeeInfo() {
         binding.tvEmpName.text = session.getEmployeeName()
@@ -108,8 +89,6 @@ class AttendanceActivity : AppCompatActivity() {
             }
         }
     }
-
-    // ── Camera / QR Scan ───────────────────────────────────────────
 
     private fun requestCamera() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -142,8 +121,17 @@ class AttendanceActivity : AppCompatActivity() {
                 .build()
             val scanner = BarcodeScanning.getClient(options)
 
+            // Use ResolutionSelector instead of deprecated setTargetResolution
+            val resSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    androidx.camera.core.resolutionselector.ResolutionStrategy(
+                        android.util.Size(1280, 720),
+                        androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                    )
+                ).build()
+
             val analyser = ImageAnalysis.Builder()
-                .setTargetResolution(android.util.Size(1280, 720))
+                .setResolutionSelector(resSelector)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analyser.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -173,17 +161,13 @@ class AttendanceActivity : AppCompatActivity() {
                 for (barcode in barcodes) {
                     val raw = barcode.rawValue ?: continue
                     if (raw.isBlank()) continue
-
-                    // Accept HYPE_LOC| prefix OR any QR text as location name
                     val location = if (raw.startsWith("HYPE_LOC|"))
                         raw.removePrefix("HYPE_LOC|").trim()
-                    else
-                        raw.trim().take(60)
+                    else raw.trim().take(60)
 
                     if (location.isNotEmpty()) {
                         scannedLocation = location
                         scanningActive  = false
-                        // Stop camera, then check today’s status from Firestore
                         runOnUiThread {
                             cameraProvider?.unbindAll()
                             binding.previewView.visibility = View.GONE
@@ -199,43 +183,28 @@ class AttendanceActivity : AppCompatActivity() {
             .addOnFailureListener { imageProxy.close() }
     }
 
-    // ── Smart button logic ───────────────────────────────────────────
-
-    /**
-     * After QR scan: fetch today’s status from Firestore,
-     * then show ONLY the relevant button:
-     *   NONE     → green CHECK IN button
-     *   IN       → red   CHECK OUT button
-     *   COMPLETE → success message, no button, offer rescan
-     */
     private fun checkTodayStatusAndShowButton(location: String) {
         lifecycleScope.launch {
-            val empId  = session.getEmployeeId()
+            val empId = session.getEmployeeId()
             todayStatus = FirestoreRepository.getTodayAttendanceStatus(empId)
             runOnUiThread {
                 when (todayStatus) {
                     "NONE" -> {
-                        // Not yet checked in — show only CHECK IN
-                        binding.tvStatus.text =
-                            "✅ Location verified: $location\nTap CHECK IN to start your shift"
+                        binding.tvStatus.text = "✅ Location: $location\nTap CHECK IN to start your shift"
                         binding.btnIn.visibility  = View.VISIBLE
                         binding.btnOut.visibility = View.GONE
                         binding.btnIn.isEnabled   = true
                         binding.btnScanQr.visibility = View.GONE
                     }
                     "IN" -> {
-                        // Already checked in — show only CHECK OUT
-                        binding.tvStatus.text =
-                            "🟡 You are checked IN at $location\nTap CHECK OUT to end your shift"
+                        binding.tvStatus.text = "🟡 Checked IN at $location\nTap CHECK OUT to end your shift"
                         binding.btnIn.visibility  = View.GONE
                         binding.btnOut.visibility = View.VISIBLE
                         binding.btnOut.isEnabled  = true
                         binding.btnScanQr.visibility = View.GONE
                     }
                     "COMPLETE" -> {
-                        // Both IN + OUT done today — attendance complete
-                        binding.tvStatus.text =
-                            "🌟 Attendance complete for today!\nYou have checked IN and OUT."
+                        binding.tvStatus.text = "🌟 Attendance complete for today!"
                         binding.btnIn.visibility  = View.GONE
                         binding.btnOut.visibility = View.GONE
                         binding.btnScanQr.visibility = View.VISIBLE
@@ -245,8 +214,6 @@ class AttendanceActivity : AppCompatActivity() {
             }
         }
     }
-
-    // ── Mark Attendance ─────────────────────────────────────────────
 
     private fun markAttendance(action: String) {
         val location = scannedLocation ?: return
@@ -263,42 +230,30 @@ class AttendanceActivity : AppCompatActivity() {
             )
             runOnUiThread {
                 if (ok) {
-                    val msg = when (action) {
-                        "IN"  -> "✅ Checked IN at $location"
-                        else  -> "🔴 Checked OUT from $location"
-                    }
-                    binding.tvStatus.text = msg
-                    Toast.makeText(this@AttendanceActivity, msg, Toast.LENGTH_SHORT).show()
-
-                    // Update local status so UI stays consistent
                     todayStatus = if (action == "IN") "IN" else "COMPLETE"
-
-                    // Hide buttons, show rescan option
-                    binding.btnIn.visibility  = View.GONE
-                    binding.btnOut.visibility = View.GONE
                     if (action == "IN") {
-                        // After check-in: keep OUT visible for same session checkout
                         binding.tvStatus.text = "✅ Checked IN at $location\nTap CHECK OUT when you leave"
+                        binding.btnIn.visibility  = View.GONE
                         binding.btnOut.visibility = View.VISIBLE
                         binding.btnOut.isEnabled  = true
                         binding.btnScanQr.visibility = View.GONE
                     } else {
-                        // After checkout: done for the day
-                        binding.tvStatus.text = "🌟 Attendance complete!\nHave a great day, ${session.getEmployeeName()}!"
+                        binding.tvStatus.text = "🌟 Attendance complete! Have a great day, ${session.getEmployeeName()}!"
+                        binding.btnIn.visibility  = View.GONE
+                        binding.btnOut.visibility = View.GONE
                         binding.btnScanQr.visibility = View.VISIBLE
                         binding.btnScanQr.text = "🔄 Scan Again"
                     }
+                    Toast.makeText(this@AttendanceActivity,
+                        if (action == "IN") "Checked IN" else "Checked OUT", Toast.LENGTH_SHORT).show()
                 } else {
-                    binding.tvStatus.text = "⚠️ Save failed. Check internet and try again."
-                    // Re-enable whichever button was showing
-                    if (action == "IN")  binding.btnIn.isEnabled  = true
-                    else                 binding.btnOut.isEnabled = true
+                    binding.tvStatus.text = "⚠️ Save failed. Check internet."
+                    if (action == "IN") binding.btnIn.isEnabled = true
+                    else binding.btnOut.isEnabled = true
                 }
             }
         }
     }
-
-    // ── UI Helpers ───────────────────────────────────────────────────
 
     private fun hideActionButtons() {
         binding.btnIn.visibility  = View.GONE
