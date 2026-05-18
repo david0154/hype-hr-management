@@ -67,16 +67,10 @@ object FirestoreRepository {
 
     // ── Attendance Stats ─────────────────────────────────────────────
 
-    /**
-     * FIX: parameter is now `uid` (Firebase Auth UID), NOT employee_id code.
-     * attendance_summary subcollection is stored under
-     * employees/{uid}/attendance_summary/{month} in Firestore.
-     * Passing "EMP-0001" here would silently return null.
-     */
-    suspend fun getAttendanceStats(uid: String): Map<String, Any>? {
+    suspend fun getAttendanceStats(employeeId: String): Map<String, Any>? {
         return try {
             val snap = db.collection("employees")
-                .document(uid)
+                .document(employeeId)
                 .collection("attendance_summary")
                 .document(currentMonthKey())
                 .get().await()
