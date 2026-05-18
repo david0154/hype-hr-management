@@ -49,12 +49,14 @@ class DashboardActivity : AppCompatActivity() {
         binding.tvEmpId.text       = session.getEmployeeId()
         binding.tvDesignation.text = session.getDesignation()
 
-        // Then refresh from Firestore to get latest photo_url
+        // Then refresh from Firestore using Firebase Auth UID to get latest data
+        val uid = session.getEmployeeUid()
+        if (uid.isEmpty()) return
+
         lifecycleScope.launch {
-            val uid    = session.getEmployeeUid()
             val empDoc = FirestoreRepository.getEmployeeByUid(uid)
 
-            // Accept multiple possible field names
+            // Accept multiple possible field names for photo
             val photoUrl = empDoc?.get("photo_url") as? String
                 ?: empDoc?.get("profile_photo") as? String
                 ?: empDoc?.get("image_url") as? String
@@ -86,8 +88,15 @@ class DashboardActivity : AppCompatActivity() {
 
     private fun loadStats() {
         binding.progressDash.visibility = View.VISIBLE
+        // FIX: use UID (not employee_id code) — attendance_summary subcollection
+        // is stored under the Firebase Auth UID document in Firestore
+        val uid = session.getEmployeeUid()
+        if (uid.isEmpty()) {
+            binding.progressDash.visibility = View.GONE
+            return
+        }
         lifecycleScope.launch {
-            val stats = FirestoreRepository.getAttendanceStats(session.getEmployeeId())
+            val stats = FirestoreRepository.getAttendanceStats(uid)
             runOnUiThread {
                 binding.progressDash.visibility = View.GONE
                 val present  = (stats?.get("present")   as? Number)?.toInt()    ?: 0
