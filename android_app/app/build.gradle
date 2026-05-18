@@ -31,7 +31,6 @@ android {
     }
     kotlinOptions { jvmTarget = '17' }
 
-    // Exclude duplicate META-INF files from ZXing + other libs
     packagingOptions {
         exclude 'META-INF/DEPENDENCIES'
         exclude 'META-INF/LICENSE'
@@ -65,9 +64,16 @@ dependencies {
     // ML Kit — QR scanning
     implementation 'com.google.mlkit:barcode-scanning:17.2.0'
 
-    // ZXing — QR code GENERATION (replaces broken androidmads lib)
+    // ZXing — QR code GENERATION
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
     implementation 'com.google.zxing:core:3.5.3'
+
+    // Glide — image loading (employee photos from Firebase Storage)
+    implementation 'com.github.bumptech.glide:glide:4.16.0'
+    annotationProcessor 'com.github.bumptech.glide:compiler:4.16.0'
+
+    // EncryptedSharedPreferences (androidx.security.crypto)
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 
     // UI
     implementation 'androidx.appcompat:appcompat:1.7.0'

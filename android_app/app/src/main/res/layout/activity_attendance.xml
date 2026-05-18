@@ -1,72 +1,164 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/colorBackground">
+    android:background="#0D1B2A">
 
-    <!-- Camera Preview -->
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"/>
-
-    <LinearLayout
+    <!-- Toolbar with ID matching binding.toolbar -->
+    <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:background="@color/colorSurface">
+        app:elevation="4dp">
 
-        <TextView
-            android:id="@+id/tvStatus"
+        <androidx.appcompat.widget.Toolbar
+            android:id="@+id/toolbar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Tap Scan QR to begin"
-            android:textSize="16sp"
-            android:textColor="@color/colorText"
-            android:gravity="center"
-            android:layout_marginBottom="16dp"
-            android:minLines="2"/>
+            android:layout_height="?attr/actionBarSize"
+            android:background="#1A2740"
+            app:titleTextColor="#FFFFFF" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnScanQr"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:text="@string/btn_scan_qr"
-            app:cornerRadius="12dp"
-            xmlns:app="http://schemas.android.com/apk/res-auto"
-            android:layout_marginBottom="12dp"/>
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:orientation="vertical"
+            android:padding="20dp">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnIn"
-                android:layout_width="0dp"
-                android:layout_height="52dp"
-                android:layout_weight="1"
-                android:text="@string/btn_check_in"
-                android:enabled="false"
-                android:layout_marginEnd="8dp"
-                xmlns:app="http://schemas.android.com/apk/res-auto"
-                app:cornerRadius="12dp"
-                app:backgroundTint="@color/colorSuccess"/>
+            <!-- Employee Info Card -->
+            <androidx.cardview.widget.CardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                app:cardCornerRadius="12dp"
+                app:cardBackgroundColor="#1A2740"
+                app:cardElevation="4dp">
 
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:padding="16dp"
+                    android:gravity="center_vertical">
+
+                    <!-- Employee Photo — ID matches binding.ivEmpPhoto -->
+                    <ImageView
+                        android:id="@+id/ivEmpPhoto"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:src="@drawable/ic_person_placeholder"
+                        android:scaleType="centerCrop"
+                        android:background="@drawable/bg_circle_photo"
+                        android:clipToOutline="true"
+                        android:contentDescription="Employee photo" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical"
+                        android:layout_marginStart="14dp">
+
+                        <!-- ID matches binding.tvEmpName -->
+                        <TextView
+                            android:id="@+id/tvEmpName"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Employee Name"
+                            android:textColor="#FFFFFF"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <!-- ID matches binding.tvEmpId -->
+                        <TextView
+                            android:id="@+id/tvEmpId"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="EMP-0000"
+                            android:textColor="#AAAAAA"
+                            android:textSize="13sp" />
+
+                    </LinearLayout>
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- Status Text -->
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:background="#1E3A5F"
+                android:padding="14dp"
+                android:text="📷 Scan the office QR code to mark attendance"
+                android:textColor="#F0C040"
+                android:textSize="14sp"
+                android:gravity="center" />
+
+            <!-- Camera Preview for QR -->
+            <androidx.camera.view.PreviewView
+                android:id="@+id/previewView"
+                android:layout_width="match_parent"
+                android:layout_height="260dp"
+                android:layout_marginBottom="16dp"
+                android:visibility="gone" />
+
+            <!-- Scan QR Button -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnOut"
-                android:layout_width="0dp"
+                android:id="@+id/btnScanQr"
+                android:layout_width="match_parent"
                 android:layout_height="52dp"
-                android:layout_weight="1"
-                android:text="@string/btn_check_out"
-                android:enabled="false"
-                xmlns:app="http://schemas.android.com/apk/res-auto"
-                app:cornerRadius="12dp"
-                app:backgroundTint="@color/colorError"/>
+                android:layout_marginBottom="12dp"
+                android:text="📷 Scan Office QR Code"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold"
+                app:backgroundTint="#1E6F9F"
+                app:cornerRadius="10dp" />
+
+            <!-- IN / OUT Buttons -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnIn"
+                    android:layout_width="0dp"
+                    android:layout_height="56dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="8dp"
+                    android:text="✅ Check IN"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:enabled="false"
+                    app:backgroundTint="#27AE60"
+                    app:cornerRadius="10dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnOut"
+                    android:layout_width="0dp"
+                    android:layout_height="56dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:text="🔴 Check OUT"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:enabled="false"
+                    app:backgroundTint="#C0392B"
+                    app:cornerRadius="10dp" />
+
+            </LinearLayout>
 
         </LinearLayout>
-    </LinearLayout>
-</LinearLayout>
+    </ScrollView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
