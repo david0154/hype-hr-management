@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:padding="10dp"
+    android:background="#1a2740"
+    android:layout_marginBottom="4dp">
+
+    <TextView
+        android:id="@+id/tvLogName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:text="Employee" />
+
+    <TextView
+        android:id="@+id/tvLogAction"
+        android:layout_width="60dp"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:text="IN" />
+
+    <TextView
+        android:id="@+id/tvLogTime"
+        android:layout_width="50dp"
+        android:layout_height="wrap_content"
+        android:textColor="#aaaaaa"
+        android:textSize="12sp"
+        android:gravity="end"
+        android:text="09:00" />
+
+</LinearLayout>
