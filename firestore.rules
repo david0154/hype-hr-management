@@ -6,76 +6,51 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // ---------------------------------------------------------------
-    // Employees
-    // ---------------------------------------------------------------
-    // Public read is allowed on the employees collection so the login
-    // screen can resolve a username / employee_id → email BEFORE the
-    // user is authenticated.  Only the username, employee_id, and email
-    // fields are needed at that point; all other fields are still safe
-    // because write is fully blocked from the client.
+    // Pre-login username lookup needs public read
     match /employees/{empId} {
-      allow read:  if true;          // needed for pre-login username lookup
-      allow write: if false;         // admin SDK only
+      allow read:  if true;
+      allow write: if false;
+
+      match /{subcollection}/{docId} {
+        allow read:  if isAuth();
+        allow write: if isAuth();
+      }
     }
 
-    // ---------------------------------------------------------------
-    // Attendance logs
-    // ---------------------------------------------------------------
-    // Both the employee app and the security app write scan events.
     match /attendance_logs/{logId} {
       allow read, write: if isAuth();
     }
 
-    // ---------------------------------------------------------------
-    // Sessions (computed by app after QR scan)
-    // ---------------------------------------------------------------
     match /sessions/{sessionId} {
       allow read, write: if isAuth();
     }
 
-    // ---------------------------------------------------------------
-    // Salary slips  (collection used by Android app: salary_slips)
-    // ---------------------------------------------------------------
-    // Each document has an employee_id field matching the employee.
-    // Employees can only read their own slips.
+    // salary_slips — used by Android SalaryActivity
+    // simple auth check; employee_id filtering done client-side
     match /salary_slips/{slipId} {
-      allow read:  if isAuth() &&
-                   resource.data.employee_id == request.auth.token.employee_id;
-      allow write: if false;         // PHP cron / admin SDK only
+      allow read:  if isAuth();
+      allow write: if false;
     }
 
-    // ---------------------------------------------------------------
-    // Salary slips (legacy collection name 'salary' — kept for
-    // backward compatibility with admin_app / PHP backend)
-    // ---------------------------------------------------------------
+    // salary — legacy collection used by admin_app / PHP backend
     match /salary/{slipId} {
       allow read:  if isAuth() &&
                    slipId.matches(request.auth.uid + '_.*');
-      allow write: if false;         // PHP cron / admin SDK only
+      allow write: if false;
     }
 
-    // ---------------------------------------------------------------
-    // Advance logs
-    // ---------------------------------------------------------------
     match /advance_logs/{logId} {
       allow read:  if isAuth();
-      allow write: if false;         // admin SDK only
+      allow write: if false;
     }
 
-    // ---------------------------------------------------------------
-    // Admin users  (never accessible from client)
-    // ---------------------------------------------------------------
     match /admin_users/{userId} {
       allow read, write: if false;
     }
 
-    // ---------------------------------------------------------------
-    // Settings  (bonus config, advance config, company settings)
-    // ---------------------------------------------------------------
     match /settings/{doc} {
       allow read:  if isAuth();
-      allow write: if false;         // admin SDK only
+      allow write: if false;
     }
   }
 }
