@@ -23,17 +23,17 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * Hype HR Management — Security Employee QR Scanner
+ * SecurityScanActivity — QR scanner used by security / supervisor / manager
+ * to mark other employees IN or OUT.
  *
- * Scans Employee ID Card QR (format: HYPE_EMP|EMP-0001|Name|username|company)
- * to mark IN/OUT for employees without smartphones.
+ * Security and supervisor are also employees in the system.
+ * They log in via the unified LoginActivity like everyone else.
+ * This screen is launched only from SecurityDashboardActivity AFTER
+ * the guard has already marked their own check-in today.
  *
- * Guards:
- *  - Double-scan prevention (processed flag)
- *  - Location extracted from QR company field
- *  - Security user must be logged in (checked via SessionManager)
+ * QR format: HYPE_EMP|EMP-0001|EmployeeName|username|company
  *
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * @author  David | Nexuzy Lab
  */
 class SecurityScanActivity : AppCompatActivity() {
 
@@ -55,12 +55,13 @@ class SecurityScanActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivitySecurityScanBinding.inflate(layoutInflater)
+        binding  = ActivitySecurityScanBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        session = SessionManager(this)
+        session  = SessionManager(this)
 
-        // Guard: must be in security mode
-        if (!session.isSecurityMode()) {
+        // Guard: must be logged in with a privileged role
+        val role = session.getRole()
+        if (!session.isLoggedIn() || role !in listOf("security", "supervisor", "manager")) {
             Toast.makeText(this, "Unauthorized", Toast.LENGTH_SHORT).show()
             finish(); return
         }
@@ -71,10 +72,11 @@ class SecurityScanActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+
         binding.tvInstruction.text =
             "Point camera at Employee ID Card QR\nto mark [$action] for the employee"
         binding.tvScannedBy.text =
-            "Scanned by: ${session.getSecurityUsername()} (${session.getSecurityRole()})"
+            "Scanned by: ${session.getEmployeeName()} (${role})"
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -82,6 +84,7 @@ class SecurityScanActivity : AppCompatActivity() {
         else cameraPermission.launch(Manifest.permission.CAMERA)
     }
 
+    // ---------------------------------------------------------------- Camera
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -102,6 +105,7 @@ class SecurityScanActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    // ---------------------------------------------------------------- QR parse
     @androidx.annotation.OptIn(ExperimentalGetImage::class)
     private fun analyseQr(imageProxy: ImageProxy, provider: ProcessCameraProvider) {
         if (processed) { imageProxy.close(); return }
@@ -112,17 +116,16 @@ class SecurityScanActivity : AppCompatActivity() {
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     val raw = barcode.rawValue ?: continue
-                    // Format: HYPE_EMP|EMP-0001|Rahul Das|rahul.hype|hype
+                    // QR format: HYPE_EMP|EMP-0001|Rahul Das|rahul.hype|hype
                     if (barcode.format == Barcode.FORMAT_QR_CODE &&
                         raw.startsWith("HYPE_EMP|")) {
                         processed = true
                         provider.unbindAll()
-                        val parts    = raw.split("|")
-                        val empId    = parts.getOrNull(1) ?: ""
-                        val empName  = parts.getOrNull(2) ?: "Employee"
-                        val company  = parts.getOrNull(4) ?: "Hype"
-                        val location = "${company.uppercase()} Gate"
-                        handleEmployeeScan(empId, empName, location)
+                        val parts   = raw.split("|")
+                        val empId   = parts.getOrNull(1) ?: ""
+                        val empName = parts.getOrNull(2) ?: "Employee"
+                        val company = parts.getOrNull(4) ?: "Hype"
+                        handleEmployeeScan(empId, empName, "${company.uppercase()} Gate")
                         break
                     }
                 }
@@ -130,8 +133,9 @@ class SecurityScanActivity : AppCompatActivity() {
             }.addOnFailureListener { imageProxy.close() }
     }
 
+    // ---------------------------------------------------------------- Save
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
-        binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action..."
+        binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action…"
         lifecycleScope.launch {
             val ok = FirestoreRepository.logAttendance(
                 empId    = empId,
@@ -147,7 +151,7 @@ class SecurityScanActivity : AppCompatActivity() {
                     binding.root.postDelayed({ finish() }, 2000L)
                 } else {
                     binding.tvStatus.text = "❌ Failed to save. Tap back and try again."
-                    processed = false   // Allow retry
+                    processed = false
                 }
             }
         }
@@ -156,8 +160,11 @@ class SecurityScanActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
     override fun onDestroy() { cameraExecutor.shutdown(); super.onDestroy() }
 
+    // ---------------------------------------------------------------- Factory
     companion object {
         private const val EXTRA_ACTION = "extra_action"
+
+        /** Called from SecurityDashboardActivity */
         fun start(context: Context, action: String) {
             context.startActivity(
                 Intent(context, SecurityScanActivity::class.java)
