@@ -6,6 +6,8 @@
 # FIX: Image cache prevents re-downloading; background thread avoids UI freeze.
 # FIX: create Firebase Auth user when adding employee so Android login works.
 # FIX: Firestore document ID = Firebase Auth UID (not employee_id).
+# FIX: _load() skips duplicate iid to prevent 'Item already exists' TclError.
+# FIX: photo_lbl after() callback checks winfo_exists() before configuring destroyed widget.
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
@@ -210,7 +212,7 @@ def _purge_expired_soft_deletes(db):
     threading.Thread(target=_run, daemon=True).start()
 
 
-# ──────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 class EmployeePanel(tk.Frame):
     def __init__(self, parent, role="admin"):
         super().__init__(parent, bg="#0d1b2a")
@@ -264,25 +266,34 @@ class EmployeePanel(tk.Frame):
         self.tree.pack(fill="both", expand=True, padx=10, pady=4)
         self.tree.bind("<Double-1>", self._edit_selected)
         tk.Label(self,
-                 text="Double-click to edit  |  Select row → 📈 Duty & Pay  or  🔑 Credentials",
+                 text="Double-click to edit  |  Select row \u2192 \U0001f4c8 Duty & Pay  or  \U0001f511 Credentials",
                  bg="#0d1b2a", fg="#555", font=("Arial", 8)).pack(anchor="w", padx=10)
 
     def _load(self, query: str = ""):
+        # Always clear before re-populating to prevent duplicate iid errors
         self.tree.delete(*self.tree.get_children())
         self.employees = {}
+        seen_ids = set()  # guard against duplicate employee_id from read_all
         for e in read_all("employees"):
             # hide both hard-deleted and soft-deleted from list
             status = e.get("status", "active")
             if status in ("deleted", "deleted_pending"):
                 continue
-            if query and query.lower() not in e.get("name","").lower() \
-                    and query.lower() not in e.get("employee_id","").lower():
+            emp_id = e.get("employee_id", "")
+            if not emp_id:
                 continue
-            self.employees[e["employee_id"]] = e
+            # Skip duplicates (e.g. read_all returning same doc twice)
+            if emp_id in seen_ids:
+                continue
+            seen_ids.add(emp_id)
+            if query and query.lower() not in e.get("name","").lower() \
+                    and query.lower() not in emp_id.lower():
+                continue
+            self.employees[emp_id] = e
             ph = e.get("app_password_hash", "").strip()
-            has_pass = "✅ Active" if ph else "❌ Not Set"
-            self.tree.insert("", "end", iid=e["employee_id"], values=(
-                e["employee_id"],
+            has_pass = "\u2705 Active" if ph else "\u274c Not Set"
+            self.tree.insert("", "end", iid=emp_id, values=(
+                emp_id,
                 e.get("name",""),
                 e.get("designation",""),
                 e.get("department",""),
@@ -316,14 +327,14 @@ class EmployeePanel(tk.Frame):
             msg = (
                 f"PERMANENTLY delete employee: {name} ({emp_id})?\n\n"
                 f"This will remove:\n"
-                f"  • Firestore employee record\n"
-                f"  • ALL attendance / session records\n"
-                f"  • ALL salary records\n"
-                f"  • Firebase Storage photo\n"
-                f"  • Firebase Auth login\n\n"
-                f"⚠️  This CANNOT be undone."
+                f"  \u2022 Firestore employee record\n"
+                f"  \u2022 ALL attendance / session records\n"
+                f"  \u2022 ALL salary records\n"
+                f"  \u2022 Firebase Storage photo\n"
+                f"  \u2022 Firebase Auth login\n\n"
+                f"\u26a0\ufe0f  This CANNOT be undone."
             )
-            if not messagebox.askyesno("HARD DELETE — Super Admin", msg, icon="warning"):
+            if not messagebox.askyesno("HARD DELETE \u2014 Super Admin", msg, icon="warning"):
                 return
             try:
                 errors = _hard_delete_employee(self.db, uid, emp_id, name)
@@ -342,9 +353,9 @@ class EmployeePanel(tk.Frame):
         else:  # admin / hr — soft delete, kept 45 days then auto-purged
             msg = (
                 f"Delete employee: {name} ({emp_id})?\n\n"
-                f"  • Employee will be hidden from all lists\n"
-                f"  • Android app login disabled immediately\n"
-                f"  • All data kept for {DELETE_PURGE_DAYS} days then auto-purged\n\n"
+                f"  \u2022 Employee will be hidden from all lists\n"
+                f"  \u2022 Android app login disabled immediately\n"
+                f"  \u2022 All data kept for {DELETE_PURGE_DAYS} days then auto-purged\n\n"
                 f"Only a Super Admin can recover before the purge date."
             )
             if not messagebox.askyesno("Delete Employee", msg):
@@ -377,13 +388,13 @@ class EmployeePanel(tk.Frame):
         if emp: DutyPayDialog(self, employee=emp, db=self.db)
 
 
-# ───────────────────────────── DUTY & PAYMENT ──────────────────────────
+# ─────────────────────────────── DUTY & PAYMENT ──────────────────────
 class DutyPayDialog(tk.Toplevel):
     def __init__(self, parent, employee: dict, db):
         super().__init__(parent)
         self.emp = employee
         self.db  = db
-        self.title(f"📈 Duty & Payment — {employee.get('name','')}")
+        self.title(f"\U0001f4c8 Duty & Payment \u2014 {employee.get('name','')}")
         self.geometry("860x640")
         self.resizable(True, True)
         self.configure(bg="#0d1b2a")
@@ -395,7 +406,7 @@ class DutyPayDialog(tk.Toplevel):
         e = self.emp
         info = tk.Frame(self, bg="#1a2740", padx=16, pady=10)
         info.pack(fill="x")
-        tk.Label(info, text=f"👤  {e.get('name','')}  |  {e.get('employee_id','')}  |  "
+        tk.Label(info, text=f"\U0001f464  {e.get('name','')}  |  {e.get('employee_id','')}  |  "
                             f"{e.get('designation','')}  |  {e.get('department','')}",
                  bg="#1a2740", fg="#f0c040", font=("Arial",11,"bold")).pack(side="left")
         tk.Label(info, text=f"Base: Rs.{float(e.get('salary',0)):,.0f}  "
@@ -414,7 +425,7 @@ class DutyPayDialog(tk.Toplevel):
         tk.Entry(ctrl, textvariable=self.year_var, width=6,
                  bg="#1e3a5f", fg="white", insertbackground="white",
                  relief="flat", bd=4).pack(side="left", padx=4)
-        tk.Button(ctrl, text="🔍 Load", bg="#f77f00", fg="white",
+        tk.Button(ctrl, text="\U0001f50d Load", bg="#f77f00", fg="white",
                   relief="flat", padx=12, pady=4, cursor="hand2",
                   command=self._load).pack(side="left", padx=6)
 
@@ -475,11 +486,11 @@ class DutyPayDialog(tk.Toplevel):
             if sess:
                 duty  = sess.get("duty_status","absent")
                 ot    = sess.get("ot_status","none")
-                in_t  = sess.get("in_time","—")
-                out_t = sess.get("out_time","—")
+                in_t  = sess.get("in_time","\u2014")
+                out_t = sess.get("out_time","\u2014")
                 hours = sess.get("duty_hours","")
             else:
-                duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","—","—",""
+                duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","\u2014","\u2014",""
 
             if duty=="full":   dp=day_rate;  total_present+=1
             elif duty=="half": dp=day_rate/2; total_half+=1; total_present+=0.5
@@ -496,27 +507,27 @@ class DutyPayDialog(tk.Toplevel):
                 date_str, weekday,
                 duty.title(), ot.title(),
                 in_t, out_t,
-                f"{hours:.1f}h" if isinstance(hours,float) else (str(hours) or "—"),
-                f"Rs.{dp:,.0f}" if dp else "—",
-                f"Rs.{op:,.0f}" if op else "—",
+                f"{hours:.1f}h" if isinstance(hours,float) else (str(hours) or "\u2014"),
+                f"Rs.{dp:,.0f}" if dp else "\u2014",
+                f"Rs.{op:,.0f}" if op else "\u2014",
             ), tags=("sunday" if is_sunday else duty,))
 
         net_pay = max(0, gross_pay - advance)
         self.summary_lbl.config(
-            text=f"  ✅ Present: {total_present}d   🔴 Absent: {total_absent}d   "
-                 f"🟡 Half Days: {total_half}d   ⏰ OT Days: {total_ot_days}   |"
-                 f"   💰 Gross: Rs.{gross_pay:,.0f}   ➖ Advance: Rs.{advance:,.0f}   "
-                 f"🟢 Net Pay: Rs.{net_pay:,.0f}  | Mode: {self.emp.get('payment_mode','CASH')}")
+            text=f"  \u2705 Present: {total_present}d   \U0001f534 Absent: {total_absent}d   "
+                 f"\U0001f7e1 Half Days: {total_half}d   \u23f0 OT Days: {total_ot_days}   |"
+                 f"   \U0001f4b0 Gross: Rs.{gross_pay:,.0f}   \u2796 Advance: Rs.{advance:,.0f}   "
+                 f"\U0001f7e2 Net Pay: Rs.{net_pay:,.0f}  | Mode: {self.emp.get('payment_mode','CASH')}")
 
 
-# ───────────────────────────── CREDENTIALS ─────────────────────────────
+# ─────────────────────────────── CREDENTIALS ─────────────────────────
 class CredentialsDialog(tk.Toplevel):
     def __init__(self, parent, employee: dict, on_refresh=None):
         super().__init__(parent)
         self.employee   = employee
         self.on_refresh = on_refresh
         self.db         = get_db()
-        self.title(f"🔑 Android Credentials — {employee.get('name','')}")
+        self.title(f"\U0001f511 Android Credentials \u2014 {employee.get('name','')}")
         self.geometry("460x480")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
@@ -536,7 +547,7 @@ class CredentialsDialog(tk.Toplevel):
         _bind_scroll(canvas)
 
         e = self.employee
-        tk.Label(frm, text="📱 Android App Login Credentials",
+        tk.Label(frm, text="\U0001f4f1 Android App Login Credentials",
                  font=("Arial",13,"bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
         tk.Label(frm, text=f"{e.get('name','')}  |  {e.get('employee_id','')}",
                  bg="#0d1b2a", fg="#aaa", font=("Arial",9)).pack(anchor="w", pady=(2,12))
@@ -551,7 +562,7 @@ class CredentialsDialog(tk.Toplevel):
             lbl = tk.Label(r, text=value, bg="#1a2740", fg="#f0c040",
                            font=("Arial",11,"bold"), anchor="w")
             lbl.pack(side="left", padx=4)
-            tk.Button(r, text="📋 Copy",
+            tk.Button(r, text="\U0001f4cb Copy",
                       command=lambda v=value: self._copy(v),
                       bg="#2c3e50", fg="#ccc", relief="flat",
                       font=("Arial",8), padx=6).pack(side="right")
@@ -568,21 +579,21 @@ class CredentialsDialog(tk.Toplevel):
         cred_row("Username:", username)
         self.pass_lbl = cred_row("Password:", plain_pass)
 
-        st_text  = "✅  Password is active" if is_active else "⚠️  Not yet saved — click Set Password below"
+        st_text  = "\u2705  Password is active" if is_active else "\u26a0\ufe0f  Not yet saved \u2014 click Set Password below"
         st_color = "#27ae60" if is_active else "#e67e22"
         tk.Label(card, text=st_text, bg="#1a2740", fg=st_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
 
         info = tk.Frame(frm, bg="#132030", padx=12, pady=10)
         info.pack(fill="x", pady=(0,14))
-        tk.Label(info, text="ℹ️  How employee logs into Android app:",
+        tk.Label(info, text="\u2139\ufe0f  How employee logs into Android app:",
                  bg="#132030", fg="#f0c040", font=("Arial",9,"bold")).pack(anchor="w")
-        tk.Label(info, text=f"  • Open Hype HR Employee App\n"
-                            f"  • Email: {e.get('email','(not set)')}\n"
-                            f"  • Username: {username}\n"
-                            f"  • Password: {plain_pass}",
+        tk.Label(info, text=f"  \u2022 Open Hype HR Employee App\n"
+                            f"  \u2022 Email: {e.get('email','(not set)')}\n"
+                            f"  \u2022 Username: {username}\n"
+                            f"  \u2022 Password: {plain_pass}",
                  bg="#132030", fg="#ccc", font=("Arial",9), justify="left").pack(anchor="w", pady=(4,0))
 
-        tk.Label(frm, text="— Reset Password —",
+        tk.Label(frm, text="\u2014 Reset Password \u2014",
                  bg="#0d1b2a", fg="#ccc", font=("Arial",9,"bold")).pack(anchor="w", pady=(0,6))
         nr = tk.Frame(frm, bg="#0d1b2a"); nr.pack(fill="x", pady=3)
         tk.Label(nr, text="New Password:", width=16, anchor="w",
@@ -593,10 +604,10 @@ class CredentialsDialog(tk.Toplevel):
                  relief="flat", bd=4).pack(side="left", padx=6)
 
         br = tk.Frame(frm, bg="#0d1b2a"); br.pack(fill="x", pady=8)
-        tk.Button(br, text="🔒 Set Password",  command=self._set_password,
+        tk.Button(br, text="\U0001f512 Set Password",  command=self._set_password,
                   bg="#c0392b", fg="white", relief="flat",
                   font=("Arial",9,"bold"), padx=12, pady=5).pack(side="left", padx=(0,8))
-        tk.Button(br, text="↺ Reset Default", command=self._reset_to_default,
+        tk.Button(br, text="\u21ba Reset Default", command=self._reset_to_default,
                   bg="#1e6f9f", fg="white", relief="flat",
                   font=("Arial",9,"bold"), padx=12, pady=5).pack(side="left", padx=(0,8))
         tk.Button(br, text="Close", command=self.destroy,
@@ -604,7 +615,7 @@ class CredentialsDialog(tk.Toplevel):
 
     def _copy(self, text):
         self.clipboard_clear(); self.clipboard_append(text)
-        messagebox.showinfo("✔ Copied", f"Copied:\n{text}", parent=self)
+        messagebox.showinfo("\u2714 Copied", f"Copied:\n{text}", parent=self)
 
     def _set_password(self):
         p = self.new_pass_var.get().strip()
@@ -626,13 +637,13 @@ class CredentialsDialog(tk.Toplevel):
             })
             _update_firebase_auth_password(uid, plain)
             self.pass_lbl.config(text=plain)
-            messagebox.showinfo("✅ Saved", f"Password updated:\n{plain}", parent=self)
+            messagebox.showinfo("\u2705 Saved", f"Password updated:\n{plain}", parent=self)
             if self.on_refresh: self.on_refresh()
         except Exception as ex:
             messagebox.showerror("Error", str(ex), parent=self)
 
 
-# ───────────────────────────── EMPLOYEE DIALOG ─────────────────────────
+# ─────────────────────────────── EMPLOYEE DIALOG ──────────────────────
 class EmployeeDialog(tk.Toplevel):
     def __init__(self, parent, mode="add", employee=None, on_save=None):
         super().__init__(parent)
@@ -642,7 +653,7 @@ class EmployeeDialog(tk.Toplevel):
         self.photo_path = None
         self._photo_tk  = None
         self.db         = get_db()
-        self.title("Add Employee" if mode=="add" else f"Edit — {employee.get('name','')}")
+        self.title("Add Employee" if mode=="add" else f"Edit \u2014 {employee.get('name','')}")
         self.geometry("520x780")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
@@ -688,7 +699,7 @@ class EmployeeDialog(tk.Toplevel):
             tk.Label(frm, text=t, fg="#f0c040",
                      bg="#0d1b2a", font=("Helvetica",9,"bold")).pack(anchor="w", pady=(0,2))
 
-        section("🖼️ Photo")
+        section("\U0001f5bc\ufe0f Photo")
         photo_row = tk.Frame(frm, bg="#0d1b2a"); photo_row.pack(fill="x", pady=4)
         self.photo_lbl = tk.Label(
             photo_row, bg="#1a2740", width=10, height=5,
@@ -696,13 +707,13 @@ class EmployeeDialog(tk.Toplevel):
         )
         self.photo_lbl.pack(side="left", padx=(0,12))
         pb = tk.Frame(photo_row, bg="#0d1b2a"); pb.pack(side="left")
-        tk.Button(pb, text="📂 Browse Photo",
+        tk.Button(pb, text="\U0001f4c2 Browse Photo",
                   bg="#1e6f9f", fg="white", relief="flat", padx=10, pady=4,
                   cursor="hand2", command=self._browse_photo).pack(anchor="w", pady=2)
         photo_url = e.get("photo_url", "")
         self.photo_status = tk.Label(
             pb,
-            text=" Current: " + ("✅ Uploaded" if photo_url else "None"),
+            text=" Current: " + ("\u2705 Uploaded" if photo_url else "None"),
             bg="#0d1b2a",
             fg="#27ae60" if photo_url else "#aaa",
             font=("Arial", 8)
@@ -714,22 +725,22 @@ class EmployeeDialog(tk.Toplevel):
         else:
             self.photo_lbl.config(text="No Photo", fg="#555")
 
-        section("— Mandatory —")
+        section("\u2014 Mandatory \u2014")
         self.v_name    = field("Full Name",        "name")
         self.v_email   = field("Email",             "email")
         self.v_mobile  = field("Mobile",           "mobile")
         self.v_address = field("Address",          "address")
         self.v_aadhaar = field("Aadhaar Number",   "aadhaar")
         self.v_salary  = field("Base Salary (Rs)", "salary")
-        tk.Label(frm, text="ℹ️ Email is used as the Firebase login credential for the Android app.",
+        tk.Label(frm, text="\u2139\ufe0f Email is used as the Firebase login credential for the Android app.",
                  bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w", pady=(0,4))
 
-        section("— Job Details —")
+        section("\u2014 Job Details \u2014")
         self.v_desig = field("Designation",  "designation")
         self.v_dept  = field("Department",   "department")
         self.v_doj   = field("Date of Join", "date_of_join", default=str(date.today()))
 
-        section("📱 Android App Login")
+        section("\U0001f4f1 Android App Login")
         self.v_username = field("App Username", "username")
         if self.mode == "add":
             self.v_name.trace_add("write",   self._auto_fill)
@@ -742,25 +753,25 @@ class EmployeeDialog(tk.Toplevel):
                      bg="#1e3a5f", fg="#f0c040",
                      insertbackground="white", relief="flat", bd=4).pack(side="left", padx=4)
             tk.Label(pr, text="(auto)", bg="#0d1b2a", fg="#555", font=("Arial",7)).pack(side="left")
-            tk.Label(frm, text="ℹ️ FirstName + last4 mobile + @123  — editable",
+            tk.Label(frm, text="\u2139\ufe0f FirstName + last4 mobile + @123  \u2014 editable",
                      bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w")
         else:
             plain = e.get("app_password_plain","")
-            disp  = plain if plain else "⚠️ Not set — use 🔑 Credentials"
+            disp  = plain if plain else "\u26a0\ufe0f Not set \u2014 use \U0001f511 Credentials"
             tk.Label(frm, text=f"  Current password: {disp}",
                      bg="#0d1b2a",
                      fg="#27ae60" if plain else "#e67e22", font=("Arial",9)).pack(anchor="w", pady=(2,0))
 
-        section("— Religion & Bonus —")
+        section("\u2014 Religion & Bonus \u2014")
         self.v_religion = dropdown("Religion","religion",RELIGIONS,"Other")
 
-        section("— Optional —")
+        section("\u2014 Optional \u2014")
         self.v_pan      = field("PAN Number",  "pan")
         self.v_pay_mode = dropdown("Payment Mode","payment_mode",PAYMENT_MODES,"CASH")
 
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=8)
         br = tk.Frame(frm, bg="#0d1b2a"); br.pack(fill="x", pady=6)
-        tk.Button(br, text="✔ Save Employee", command=self._save,
+        tk.Button(br, text="\u2714 Save Employee", command=self._save,
                   bg="#f77f00", fg="white", font=("Arial",10,"bold"),
                   relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,10))
         tk.Button(br, text="Cancel", command=self.destroy,
@@ -776,7 +787,8 @@ class EmployeeDialog(tk.Toplevel):
                     data = doc.to_dict()
                     fresh_url = data.get("photo_url", "")
                     self.employee.update(data)
-                    self.after(0, lambda: self._apply_photo_url(fresh_url))
+                    if self.winfo_exists():
+                        self.after(0, lambda: self._apply_photo_url(fresh_url))
             except Exception:
                 pass
         threading.Thread(target=_fetch, daemon=True).start()
@@ -784,7 +796,7 @@ class EmployeeDialog(tk.Toplevel):
     def _apply_photo_url(self, url: str):
         if not self.winfo_exists(): return
         if url:
-            self.photo_status.config(text=" Current: ✅ Uploaded", fg="#27ae60")
+            self.photo_status.config(text=" Current: \u2705 Uploaded", fg="#27ae60")
             self._load_photo_url_async(url)
         else:
             self.photo_lbl.config(image="", text="No Photo", fg="#555", width=10, height=5)
@@ -792,24 +804,37 @@ class EmployeeDialog(tk.Toplevel):
 
     def _load_photo_url_async(self, url: str):
         if not url: return
-        self.photo_lbl.config(text="Loading...", image="", fg="#888")
+        if self.winfo_exists():
+            self.photo_lbl.config(text="Loading...", image="", fg="#888")
         def _fetch():
             try:
                 from utils.image_cache import get_photo_image
                 ph = get_photo_image(url, size=(80, 80), timeout=15)
                 if ph:
-                    self.after(0, lambda: self._set_photo_tk(ph))
+                    if self.winfo_exists():
+                        self.after(0, lambda: self._set_photo_tk(ph))
                 else:
-                    self.after(0, lambda: self.photo_lbl.config(
-                        image="", text="Load failed", fg="#e74c3c", width=10, height=5))
+                    if self.winfo_exists():
+                        self.after(0, lambda: self._safe_photo_fail())
             except Exception:
                 pass
         threading.Thread(target=_fetch, daemon=True).start()
 
+    def _safe_photo_fail(self):
+        """Safely update photo_lbl only if dialog still exists."""
+        try:
+            if self.winfo_exists():
+                self.photo_lbl.config(image="", text="Load failed", fg="#e74c3c", width=10, height=5)
+        except tk.TclError:
+            pass
+
     def _set_photo_tk(self, ph):
         if not self.winfo_exists(): return
-        self._photo_tk = ph
-        self.photo_lbl.config(image=ph, text="", width=80, height=80)
+        try:
+            self._photo_tk = ph
+            self.photo_lbl.config(image=ph, text="", width=80, height=80)
+        except tk.TclError:
+            pass
 
     def _browse_photo(self):
         path = filedialog.askopenfilename(
@@ -889,7 +914,7 @@ class EmployeeDialog(tk.Toplevel):
             app_hash  = self.employee.get("app_password_hash","")
             app_plain = self.employee.get("app_password_plain","")
 
-        self.title("Saving…"); self.update()
+        self.title("Saving\u2026"); self.update()
 
         uid = self.employee.get("uid", emp_id)
         if self.mode == "add":
@@ -930,9 +955,9 @@ class EmployeeDialog(tk.Toplevel):
         }
         db = get_db()
         db.collection("employees").document(uid).set(data)
-        msg = f"✅ {emp_id} saved!"
+        msg = f"\u2705 {emp_id} saved!"
         if self.mode == "add":
-            msg += f"\n\n📱 App Login:\n  Email: {email}\n  Username: {uname}\n  Pass: {app_plain}"
+            msg += f"\n\n\U0001f4f1 App Login:\n  Email: {email}\n  Username: {uname}\n  Pass: {app_plain}"
         messagebox.showinfo("Saved", msg, parent=self)
         if self.on_save: self.on_save()
         self.destroy()
