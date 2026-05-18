@@ -23,6 +23,7 @@
             android:layout_weight="1"
             android:orientation="vertical">
 
+            <!-- Month label — used by SalaryAdapter binding tvMonth -->
             <TextView
                 android:id="@+id/tvMonth"
                 android:layout_width="wrap_content"
@@ -32,6 +33,7 @@
                 android:textSize="15sp"
                 android:textStyle="bold" />
 
+            <!-- Status label — used by SalaryAdapter binding tvStatus -->
             <TextView
                 android:id="@+id/tvStatus"
                 android:layout_width="wrap_content"
@@ -40,14 +42,15 @@
                 android:text="Paid"
                 android:textColor="#27AE60"
                 android:textSize="12sp" />
+
         </LinearLayout>
 
-        <!-- THIS ID was missing — tvAmount used by SalaryAdapter -->
+        <!-- Amount label — used by SalaryAdapter binding tvAmount -->
         <TextView
             android:id="@+id/tvAmount"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="₹0"
+            android:text="&#8377;0"
             android:textColor="#F0C040"
             android:textSize="16sp"
             android:textStyle="bold" />

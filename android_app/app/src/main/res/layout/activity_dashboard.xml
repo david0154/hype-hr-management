@@ -12,7 +12,7 @@
         android:layout_height="?attr/actionBarSize"
         android:background="@color/colorPrimary"
         app:titleTextColor="@color/white"
-        app:title="Hype HR"/>
+        app:title="Hype HR" />
 
     <ProgressBar
         android:id="@+id/progressDash"
@@ -20,7 +20,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:visibility="gone"
-        style="?attr/progressBarStyle"/>
+        style="?attr/progressBarStyle" />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -44,57 +44,77 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="20dp">
+                    android:orientation="horizontal"
+                    android:padding="20dp"
+                    android:gravity="center_vertical">
 
-                    <TextView
-                        android:id="@+id/tvCompany"
-                        android:layout_width="wrap_content"
+                    <!-- Employee Photo — ID used by DashboardActivity binding.ivEmpPhoto -->
+                    <ImageView
+                        android:id="@+id/ivEmpPhoto"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:src="@drawable/ic_person_placeholder"
+                        android:scaleType="centerCrop"
+                        android:background="@drawable/bg_circle_photo"
+                        android:clipToOutline="true"
+                        android:contentDescription="Employee photo"
+                        android:layout_marginEnd="16dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:text="Hype Pvt Ltd"
-                        android:textColor="@color/white"
-                        android:textSize="12sp"
-                        android:alpha="0.8"
-                        android:layout_marginBottom="4dp"/>
+                        android:layout_weight="1"
+                        android:orientation="vertical">
 
-                    <TextView
-                        android:id="@+id/tvEmpName"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Employee Name"
-                        android:textColor="@color/white"
-                        android:textSize="20sp"
-                        android:textStyle="bold"
-                        android:layout_marginBottom="4dp"/>
+                        <TextView
+                            android:id="@+id/tvCompany"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Hype Pvt Ltd"
+                            android:textColor="@color/white"
+                            android:textSize="11sp"
+                            android:alpha="0.75"
+                            android:layout_marginBottom="4dp" />
 
-                    <TextView
-                        android:id="@+id/tvEmpId"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="EMP-0001"
-                        android:textColor="@color/white"
-                        android:textSize="14sp"
-                        android:alpha="0.9"
-                        android:layout_marginBottom="2dp"/>
+                        <TextView
+                            android:id="@+id/tvEmpName"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Employee Name"
+                            android:textColor="@color/white"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="3dp" />
 
-                    <TextView
-                        android:id="@+id/tvDesignation"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Designation"
-                        android:textColor="@color/white"
-                        android:textSize="12sp"
-                        android:alpha="0.85"
-                        android:layout_marginBottom="4dp"/>
+                        <TextView
+                            android:id="@+id/tvEmpId"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="EMP-0001"
+                            android:textColor="@color/white"
+                            android:textSize="13sp"
+                            android:alpha="0.9"
+                            android:layout_marginBottom="2dp" />
 
-                    <TextView
-                        android:id="@+id/tvDate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textColor="@color/white"
-                        android:textSize="12sp"
-                        android:alpha="0.75"/>
+                        <TextView
+                            android:id="@+id/tvDesignation"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Designation"
+                            android:textColor="@color/white"
+                            android:textSize="12sp"
+                            android:alpha="0.85"
+                            android:layout_marginBottom="4dp" />
 
+                        <TextView
+                            android:id="@+id/tvDate"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/white"
+                            android:textSize="11sp"
+                            android:alpha="0.7" />
+
+                    </LinearLayout>
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
@@ -113,18 +133,15 @@
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
                     android:layout_marginEnd="4dp">
-                    <LinearLayout android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:gravity="center"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:gravity="center" android:padding="12dp">
                         <TextView android:id="@+id/tvPresent" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0"
                             android:textSize="22sp" android:textStyle="bold"
-                            android:textColor="@color/colorSuccess"/>
+                            android:textColor="@color/colorSuccess" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                             android:text="@string/total_present" android:textSize="10sp"
-                            android:textColor="@color/colorTextMuted"/>
+                            android:textColor="@color/colorTextMuted" />
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
 
@@ -136,18 +153,15 @@
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
                     android:layout_marginHorizontal="4dp">
-                    <LinearLayout android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:gravity="center"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:gravity="center" android:padding="12dp">
                         <TextView android:id="@+id/tvHalfDays" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0"
                             android:textSize="22sp" android:textStyle="bold"
-                            android:textColor="@color/colorWarning"/>
+                            android:textColor="@color/colorWarning" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                             android:text="Half Days" android:textSize="10sp"
-                            android:textColor="@color/colorTextMuted"/>
+                            android:textColor="@color/colorTextMuted" />
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
 
@@ -159,18 +173,15 @@
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
                     android:layout_marginHorizontal="4dp">
-                    <LinearLayout android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:gravity="center"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:gravity="center" android:padding="12dp">
                         <TextView android:id="@+id/tvAbsent" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0"
                             android:textSize="22sp" android:textStyle="bold"
-                            android:textColor="@color/colorError"/>
+                            android:textColor="@color/colorError" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                             android:text="@string/total_absent" android:textSize="10sp"
-                            android:textColor="@color/colorTextMuted"/>
+                            android:textColor="@color/colorTextMuted" />
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
 
@@ -182,18 +193,15 @@
                     app:cardElevation="2dp"
                     app:cardBackgroundColor="@color/colorSurface"
                     android:layout_marginStart="4dp">
-                    <LinearLayout android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:gravity="center"
-                        android:padding="12dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:orientation="vertical" android:gravity="center" android:padding="12dp">
                         <TextView android:id="@+id/tvOtHours" android:layout_width="wrap_content"
                             android:layout_height="wrap_content" android:text="0 hrs"
                             android:textSize="16sp" android:textStyle="bold"
-                            android:textColor="@color/colorWarning"/>
+                            android:textColor="@color/colorWarning" />
                         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                             android:text="@string/total_ot" android:textSize="10sp"
-                            android:textColor="@color/colorTextMuted"/>
+                            android:textColor="@color/colorTextMuted" />
                     </LinearLayout>
                 </androidx.cardview.widget.CardView>
 
@@ -211,10 +219,11 @@
                     android:orientation="vertical" android:padding="16dp">
                     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                         android:text="Today Status" android:textSize="12sp"
-                        android:textColor="@color/colorTextMuted" android:layout_marginBottom="4dp"/>
+                        android:textColor="@color/colorTextMuted" android:layout_marginBottom="4dp" />
                     <TextView android:id="@+id/tvTodayStatus" android:layout_width="wrap_content"
                         android:layout_height="wrap_content" android:text="Not Marked"
-                        android:textSize="18sp" android:textStyle="bold" android:textColor="@color/colorText"/>
+                        android:textSize="18sp" android:textStyle="bold"
+                        android:textColor="@color/colorText" />
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
@@ -225,7 +234,7 @@
                 android:layout_height="56dp"
                 android:text="Mark Attendance"
                 android:layout_marginBottom="12dp"
-                app:cornerRadius="12dp"/>
+                app:cornerRadius="12dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSalary"
@@ -235,7 +244,7 @@
                 android:layout_marginBottom="12dp"
                 app:cornerRadius="12dp"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                app:strokeColor="@color/colorPrimary"/>
+                app:strokeColor="@color/colorPrimary" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnHistory"
@@ -244,7 +253,7 @@
                 android:text="@string/attendance_history"
                 app:cornerRadius="12dp"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                app:strokeColor="@color/colorPrimary"/>
+                app:strokeColor="@color/colorPrimary" />
 
         </LinearLayout>
     </ScrollView>
