@@ -2,12 +2,10 @@ package com.nexuzylab.hypehr.ui
 
 import android.content.Intent
 import android.os.Bundle
-import android.util.Log
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.firebase.firestore.FirebaseFirestore
 import com.nexuzylab.hypehr.databinding.ActivitySecurityDashboardBinding
 import com.nexuzylab.hypehr.ui.security.SecurityLogsAdapter
 import com.nexuzylab.hypehr.ui.security.SecurityViewModel
@@ -17,13 +15,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * SecurityDashboardActivity — Security / Supervisor Dashboard
+ * SecurityDashboardActivity
  *
- * FIX: Always reload today's scans in onResume() — previously it only
- *      reloaded when returnedFromScan=true, but that flag was never set
- *      when arriving from a back-press or cold start, so the list stayed empty.
+ * FIX 1: Company name loaded via SecurityViewModel.loadCompanyName()
+ *         which tries settings/company → name, company_name, title fields.
+ *         Never shows "Company Gate" or a hardcoded placeholder.
  *
- * FIX: Company name loaded from Firestore settings/company (no hardcoding).
+ * FIX 2: Today's scans always reload in onResume() — no flag required.
+ *
+ * FIX 3: Recent scan list now works without a Firestore composite index
+ *         (sorting is done in memory inside SecurityViewModel).
  *
  * Developed by David | Nexuzy Lab
  */
@@ -32,7 +33,6 @@ class SecurityDashboardActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySecurityDashboardBinding
     private lateinit var vm: SecurityViewModel
     private lateinit var session: SessionManager
-    private val db = FirebaseFirestore.getInstance()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +58,12 @@ class SecurityDashboardActivity : AppCompatActivity() {
         binding.tvTodayDate.text =
             SimpleDateFormat("EEEE, dd MMM yyyy", Locale.getDefault()).format(Date())
 
-        loadCompanyName()
+        // Load real company name — tries name, company_name, title fields
+        vm.loadCompanyName { companyName ->
+            runOnUiThread {
+                binding.tvCompanyName.text = companyName
+            }
+        }
 
         binding.btnMarkIn.setOnClickListener  { openScanner("IN")  }
         binding.btnMarkOut.setOnClickListener { openScanner("OUT") }
@@ -71,23 +76,9 @@ class SecurityDashboardActivity : AppCompatActivity() {
         binding.rvRecentLogs.layoutManager = LinearLayoutManager(this)
     }
 
-    // FIX: ALWAYS reload today's scans when dashboard becomes visible
-    // (covers: returning from scanner, cold start, back-press, notification tap)
     override fun onResume() {
         super.onResume()
         loadTodayStats()
-    }
-
-    private fun loadCompanyName() {
-        db.collection("settings").document("company").get()
-            .addOnSuccessListener { doc ->
-                val name = doc.getString("name")?.takeIf { it.isNotBlank() } ?: "Your Company"
-                binding.tvCompanyName.text = name
-            }
-            .addOnFailureListener { e ->
-                Log.w("SecDashboard", "Company load failed: ${e.message}")
-                binding.tvCompanyName.text = "Your Company"
-            }
     }
 
     private fun openScanner(action: String) {

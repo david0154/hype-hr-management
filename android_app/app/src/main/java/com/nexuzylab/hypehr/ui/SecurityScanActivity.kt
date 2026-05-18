@@ -19,8 +19,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -32,6 +32,7 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.databinding.ActivitySecurityScanBinding
+import com.nexuzylab.hypehr.ui.security.SecurityViewModel
 import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,10 +46,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * SecurityScanActivity — QR scanner (ML Kit PRIMARY + ZXing FALLBACK)
  *
- * FIX: "Hype Gate" was hardcoded in 3 places inside parseAndHandle().
- *      Now the gate name = "<CompanyName> Gate" where CompanyName is
- *      loaded from Firestore settings/company at activity start.
- *      e.g. if your company is "Nexuzy Technologies" →  "Nexuzy Technologies Gate"
+ * FIX: Gate name = "<Real Company Name> Gate" loaded from Firestore via
+ *      SecurityViewModel.loadCompanyName(). No more hardcoded "Company Gate".
  *
  * @author David | Nexuzy Lab
  */
@@ -57,11 +56,11 @@ class SecurityScanActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySecurityScanBinding
     private lateinit var session: SessionManager
+    private lateinit var vm: SecurityViewModel
     private lateinit var cameraExecutor: ExecutorService
 
-    // Company name loaded from Firestore — used as gate label
-    // Default is "Company Gate" until Firestore responds
-    private var companyGateName: String = "Company Gate"
+    // Set after Firestore resolves the company name
+    private var companyGateName: String = "Gate"
 
     private val mlkitScanner by lazy {
         BarcodeScanning.getClient(
@@ -92,6 +91,7 @@ class SecurityScanActivity : AppCompatActivity() {
         binding = ActivitySecurityScanBinding.inflate(layoutInflater)
         setContentView(binding.root)
         session = SessionManager(this)
+        vm      = ViewModelProvider(this)[SecurityViewModel::class.java]
 
         val role = (session.getRole().ifBlank { session.getSecurityRole() }).lowercase().trim()
         val allowed = setOf("security", "supervisor", "manager", "hr", "admin", "super_admin", "ca")
@@ -116,38 +116,21 @@ class SecurityScanActivity : AppCompatActivity() {
         val displayRole = role.ifBlank { "security" }
         binding.tvInstruction.text = "Align Employee QR code inside the frame"
         binding.tvScannedBy.text   = "Scanned by: $displayName ($displayRole)"
-        binding.tvStatus.text      = "Waiting for QR scan…"
+        binding.tvStatus.text      = "Loading company info…"
         binding.tvAction.text      = if (action == "IN") "▶ Marking IN" else "◀ Marking OUT"
         binding.tvAction.setBackgroundColor(
             if (action == "IN") 0xFF388E3C.toInt() else 0xFFD32F2F.toInt()
         )
 
-        // ── Load company name from Firestore, then start camera ────────────
-        // Camera starts AFTER company name is resolved so every scan
-        // immediately has the real gate name.
-        loadCompanyNameThenStartCamera()
-    }
-
-    /**
-     * Loads the company name from Firestore settings/company → name.
-     * Sets [companyGateName] = "<CompanyName> Gate" then starts the camera.
-     * If Firestore fails, falls back to "Company Gate" (neutral, not "Hype Gate").
-     */
-    private fun loadCompanyNameThenStartCamera() {
-        FirebaseFirestore.getInstance()
-            .collection("settings").document("company").get()
-            .addOnSuccessListener { doc ->
-                val name = doc.getString("name")?.takeIf { it.isNotBlank() }
-                    ?: "Company"
-                companyGateName = "$name Gate"
-                Log.d(TAG, "Gate name resolved: $companyGateName")
+        // Load real company name from Firestore, THEN start camera
+        vm.loadCompanyName { name ->
+            companyGateName = "$name Gate"
+            Log.d(TAG, "Gate name resolved: $companyGateName")
+            runOnUiThread {
+                binding.tvStatus.text = "Waiting for QR scan…"
                 requestCameraOrStart()
             }
-            .addOnFailureListener { e ->
-                Log.w(TAG, "Company load failed, using default gate name: ${e.message}")
-                companyGateName = "Company Gate"
-                requestCameraOrStart()
-            }
+        }
     }
 
     private fun requestCameraOrStart() {
@@ -245,20 +228,15 @@ class SecurityScanActivity : AppCompatActivity() {
         if (!processed.compareAndSet(false, true)) return
         Log.d(TAG, "QR decoded: $raw")
 
-        // companyGateName is already set from Firestore e.g. "Nexuzy Technologies Gate"
-        // No more hardcoded "Hype Gate" anywhere below!
         val result: Triple<String, String, String>? = when {
             raw.startsWith("HYPE_EMP|") -> {
                 val p       = raw.split("|")
                 val empId   = p.getOrElse(1) { "" }.trim()
                 val empName = p.getOrElse(2) { empId }.trim().ifBlank { empId }
-                // field[4] in QR is the company slug from the ID card,
-                // but we ALWAYS use the live Firestore company name for the gate label
                 if (empId.isNotBlank()) Triple(empId, empName, companyGateName) else null
             }
             raw.startsWith("EMP:") -> {
                 val empId = raw.removePrefix("EMP:").trim()
-                // Old-format QR — still use live gate name
                 if (empId.isNotBlank()) Triple(empId, empId, companyGateName) else null
             }
             raw.matches(Regex("[A-Z]+-\\d+")) -> Triple(raw, raw, companyGateName)

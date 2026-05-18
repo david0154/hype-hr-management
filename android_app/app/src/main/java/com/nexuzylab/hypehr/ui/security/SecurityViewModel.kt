@@ -1,14 +1,13 @@
 /**
  * Hype HR Management — Security ViewModel
  *
- * FIX: loadTodayAllLogs was querying attendance_logs using string comparison
- *      on `timestamp` field, but FirestoreRepository writes `timestamp` as
- *      a Firestore Timestamp object. String comparison on a Timestamp field
- *      always returns 0 results — that is why "Today's scans" was always empty.
+ * FIX 1: loadTodayAllLogs — removed orderBy("timestamp") which requires a
+ *         composite Firestore index (date ASC + timestamp DESC). Now fetches
+ *         by date == today only, then sorts in memory. No index needed.
  *
- *      Fix: query by `date` == todayDateKey() (a plain string field that IS
- *      stored as a string) and sort by `timestamp` Firestore Timestamp.
- *      This is reliable, fast, and matches what logAttendance() writes.
+ * FIX 2: Company name is loaded from Firestore `settings/company` → `name`
+ *         field. If missing, falls back to reading `company_name` or `title`.
+ *         The Security Dashboard and Scan screen both use this.
  *
  * @author  David | Nexuzy Lab
  */
@@ -18,7 +17,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import com.nexuzylab.hypehr.data.FirebaseRepository
 import com.nexuzylab.hypehr.data.FirestoreRepository
 import com.nexuzylab.hypehr.model.AttendanceLog
@@ -60,34 +58,32 @@ class SecurityViewModel : ViewModel() {
     }
 
     /**
-     * Load ALL attendance logs for today (all employees) for the dashboard recent list.
+     * Load ALL attendance logs for today — sorted in memory (no composite index needed).
      *
-     * FIX: Previously used whereGreaterThanOrEqualTo / whereLessThanOrEqualTo on the
-     * `timestamp` field (Firestore Timestamp type) but compared it to plain strings like
-     * "2026-05-18 00:00:00" — Firestore rejects mixed-type comparisons and returns
-     * nothing. Now uses whereEqualTo("date", today) which is always a plain String field.
+     * FIX: Removed .orderBy("timestamp") which required a composite Firestore index
+     * (date ASC + timestamp DESC). Without that index the query throws FAILED_PRECONDITION
+     * and returns nothing. Sorting the small result set (<50 docs) in memory is fast enough.
      */
     fun loadTodayAllLogs(callback: (List<AttendanceLog>) -> Unit) {
         viewModelScope.launch {
             try {
                 val today = FirestoreRepository.todayDateKey()   // "yyyy-MM-dd" IST
 
+                // Only .whereEqualTo — no orderBy — so NO composite index required
                 val snap = db.collection("attendance_logs")
-                    .whereEqualTo("date", today)                 // `date` is stored as String
-                    .orderBy("timestamp", Query.Direction.DESCENDING)
-                    .limit(50)
+                    .whereEqualTo("date", today)
+                    .limit(100)
                     .get().await()
+
+                val sdfParse = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
+                sdfParse.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
 
                 val logs = snap.documents.mapNotNull { doc ->
                     val data = doc.data ?: return@mapNotNull null
-                    // Build AttendanceLog manually from Map to handle both
-                    // Timestamp objects and string timestamps gracefully
                     val tsField = data["timestamp"]
                     val tsStr = when (tsField) {
                         is Timestamp -> {
-                            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
-                            sdf.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
-                            sdf.format(tsField.toDate())
+                            sdfParse.format(tsField.toDate())
                         }
                         is String    -> tsField
                         else         -> ""
@@ -102,10 +98,33 @@ class SecurityViewModel : ViewModel() {
                         scanned_by  = (data["scanned_by"] as? String) ?: ""
                     )
                 }
-                callback(logs)
+                // Sort newest first in memory — no Firestore index required
+                val sorted = logs.sortedByDescending { it.timestamp }
+                callback(sorted)
             } catch (e: Exception) {
                 android.util.Log.e("SecurityVM", "loadTodayAllLogs failed: ${e.message}")
                 callback(emptyList())
+            }
+        }
+    }
+
+    /**
+     * Load the real company name from Firestore.
+     * Tries: settings/company → name, then company_name, then title.
+     * Falls back to "Your Company" if nothing found.
+     */
+    fun loadCompanyName(callback: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val doc = db.collection("settings").document("company").get().await()
+                val name = doc.getString("name")?.takeIf { it.isNotBlank() }
+                    ?: doc.getString("company_name")?.takeIf { it.isNotBlank() }
+                    ?: doc.getString("title")?.takeIf { it.isNotBlank() }
+                    ?: "Your Company"
+                callback(name)
+            } catch (e: Exception) {
+                android.util.Log.w("SecurityVM", "loadCompanyName failed: ${e.message}")
+                callback("Your Company")
             }
         }
     }
