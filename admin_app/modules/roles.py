@@ -7,6 +7,7 @@ ROLES:
   hr          : Employees, attendance, salary view, bonus
   ca          : Salary, bonus, raise, reports
   manager     : Attendance, employee view
+  supervisor  : Security scanner + employee view (same as security but more access)
   security    : Security scanner only (mark IN/OUT for employees without phones)
 
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
@@ -37,6 +38,10 @@ PERMISSIONS = {
         "dashboard", "attendance", "employees",
         "mark_attendance", "security"
     ],
+    "supervisor": [
+        "dashboard", "attendance", "employees",
+        "mark_attendance", "security"
+    ],
     "security": [
         "security"
     ],
@@ -48,6 +53,7 @@ ROLE_DISPLAY = {
     "hr":          "HR Manager",
     "ca":          "CA / Accountant",
     "manager":     "Manager",
+    "supervisor":  "Supervisor",
     "security":    "Security Guard",
 }
 
