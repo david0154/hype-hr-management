@@ -5,180 +5,163 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import com.nexuzylab.hypehr.R
-import com.nexuzylab.hypehr.ui.security.SecurityViewModel
+import com.nexuzylab.hypehr.data.FirestoreRepository
+import com.nexuzylab.hypehr.databinding.ActivitySecurityScanBinding
+import com.nexuzylab.hypehr.utils.SessionManager
+import kotlinx.coroutines.launch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * SecurityScanActivity — QR scanner for security / supervisor to mark
- * other employees IN or OUT.
+ * Hype HR Management — Security Employee QR Scanner
  *
- * Started via [SecurityScanActivity.start] from SecurityDashboardActivity.
- * Action ("IN" or "OUT") is passed as an Intent extra.
+ * Scans Employee ID Card QR (format: HYPE_EMP|EMP-0001|Name|username|company)
+ * to mark IN/OUT for employees without smartphones.
  *
- * @author  David | Nexuzy Lab
+ * Guards:
+ *  - Double-scan prevention (processed flag)
+ *  - Location extracted from QR company field
+ *  - Security user must be logged in (checked via SessionManager)
+ *
+ * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
  */
 class SecurityScanActivity : AppCompatActivity() {
 
-    private lateinit var vm: SecurityViewModel
+    private lateinit var binding: ActivitySecurityScanBinding
+    private lateinit var session: SessionManager
     private lateinit var cameraExecutor: ExecutorService
-    private var scanProcessed = false
-    private var pendingAction = "IN"
-
-    // View references — matching activity_security_scan.xml IDs
-    private lateinit var toolbar: Toolbar
-    private lateinit var tvInstruction: TextView
-    private lateinit var tvScannedBy: TextView
-    private lateinit var tvStatus: TextView
+    private var action: String = "IN"
+    private var processed = false
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) startCamera()
         else {
-            Toast.makeText(this, "Camera permission required to scan QR", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show()
             finish()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_security_scan)
+        binding = ActivitySecurityScanBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        session = SessionManager(this)
 
-        // Bind views
-        toolbar       = findViewById(R.id.toolbar)
-        tvInstruction = findViewById(R.id.tvInstruction)
-        tvScannedBy   = findViewById(R.id.tvScannedBy)
-        tvStatus      = findViewById(R.id.tvStatus)
+        // Guard: must be in security mode
+        if (!session.isSecurityMode()) {
+            Toast.makeText(this, "Unauthorized", Toast.LENGTH_SHORT).show()
+            finish(); return
+        }
 
-        setSupportActionBar(toolbar)
+        action = intent.getStringExtra(EXTRA_ACTION) ?: "IN"
+        setSupportActionBar(binding.toolbar)
+        supportActionBar?.title = "Scan Employee QR — $action"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
-        pendingAction = intent.getStringExtra(EXTRA_ACTION) ?: "IN"
-        vm            = ViewModelProvider(this)[SecurityViewModel::class.java]
         cameraExecutor = Executors.newSingleThreadExecutor()
-
-        tvInstruction.text = if (pendingAction == "IN")
-            "Point camera at employee QR to mark CHECK IN ✅"
-        else
-            "Point camera at employee QR to mark CHECK OUT 🚪"
-
-        tvScannedBy.text = "Scanned by: ${intent.getStringExtra(EXTRA_SCANNER_NAME) ?: "Guard"}"
-        tvStatus.text    = "Waiting for QR scan…"
+        binding.tvInstruction.text =
+            "Point camera at Employee ID Card QR\nto mark [$action] for the employee"
+        binding.tvScannedBy.text =
+            "Scanned by: ${session.getSecurityUsername()} (${session.getSecurityRole()})"
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            == PackageManager.PERMISSION_GRANTED) {
-            startCamera()
-        } else {
-            cameraPermission.launch(Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) startCamera()
+        else cameraPermission.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun startCamera() {
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            val provider = future.get()
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+            val analyser = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+            analyser.setAnalyzer(cameraExecutor) { proxy -> analyseQr(proxy, provider) }
+            runCatching {
+                provider.unbindAll()
+                provider.bindToLifecycle(
+                    this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyser
+                )
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    @androidx.annotation.OptIn(ExperimentalGetImage::class)
+    private fun analyseQr(imageProxy: ImageProxy, provider: ProcessCameraProvider) {
+        if (processed) { imageProxy.close(); return }
+        val mediaImage = imageProxy.image ?: run { imageProxy.close(); return }
+        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+
+        BarcodeScanning.getClient().process(image)
+            .addOnSuccessListener { barcodes ->
+                for (barcode in barcodes) {
+                    val raw = barcode.rawValue ?: continue
+                    // Format: HYPE_EMP|EMP-0001|Rahul Das|rahul.hype|hype
+                    if (barcode.format == Barcode.FORMAT_QR_CODE &&
+                        raw.startsWith("HYPE_EMP|")) {
+                        processed = true
+                        provider.unbindAll()
+                        val parts    = raw.split("|")
+                        val empId    = parts.getOrNull(1) ?: ""
+                        val empName  = parts.getOrNull(2) ?: "Employee"
+                        val company  = parts.getOrNull(4) ?: "Hype"
+                        val location = "${company.uppercase()} Gate"
+                        handleEmployeeScan(empId, empName, location)
+                        break
+                    }
+                }
+                imageProxy.close()
+            }.addOnFailureListener { imageProxy.close() }
+    }
+
+    private fun handleEmployeeScan(empId: String, empName: String, location: String) {
+        binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action..."
+        lifecycleScope.launch {
+            val ok = FirestoreRepository.logAttendance(
+                empId    = empId,
+                action   = action,
+                location = location,
+                empName  = empName,
+            )
+            runOnUiThread {
+                if (ok) {
+                    val msg = "$empName marked $action at $location"
+                    binding.tvStatus.text = "✅ $msg"
+                    Toast.makeText(this@SecurityScanActivity, msg, Toast.LENGTH_LONG).show()
+                    binding.root.postDelayed({ finish() }, 2000L)
+                } else {
+                    binding.tvStatus.text = "❌ Failed to save. Tap back and try again."
+                    processed = false   // Allow retry
+                }
+            }
         }
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
+    override fun onDestroy() { cameraExecutor.shutdown(); super.onDestroy() }
 
-    // ---------------------------------------------------------------- Camera
-    private fun startCamera() {
-        val future = ProcessCameraProvider.getInstance(this)
-        future.addListener({
-            val provider    = future.get()
-            val previewView = findViewById<androidx.camera.view.PreviewView>(R.id.previewView)
-            val preview     = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build().also {
-                    it.setAnalyzer(cameraExecutor, ::analyzeFrame)
-                }
-            provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    @androidx.camera.core.ExperimentalGetImage
-    private fun analyzeFrame(imageProxy: ImageProxy) {
-        val mediaImage = imageProxy.image ?: run { imageProxy.close(); return }
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        BarcodeScanning.getClient().process(image)
-            .addOnSuccessListener { barcodes ->
-                if (!scanProcessed) {
-                    val raw = barcodes.firstOrNull()?.rawValue ?: return@addOnSuccessListener
-                    if (raw.startsWith("EMP-")) {
-                        scanProcessed = true
-                        runOnUiThread {
-                            tvStatus.text = "QR detected: $raw — loading…"
-                            showConfirmDialog(raw)
-                        }
-                    }
-                }
-            }
-            .addOnCompleteListener { imageProxy.close() }
-    }
-
-    // ---------------------------------------------------------- Dialog
-    private fun showConfirmDialog(employeeId: String) {
-        vm.lookupEmployee(employeeId) { employee ->
-            if (employee == null) {
-                runOnUiThread {
-                    tvStatus.text = "❌ Employee $employeeId not found"
-                    Toast.makeText(this, "Employee not found", Toast.LENGTH_SHORT).show()
-                    scanProcessed = false
-                }
-                return@lookupEmployee
-            }
-            runOnUiThread {
-                tvStatus.text = "Found: ${employee.name} — confirm action"
-                val label = if (pendingAction == "IN") "✅ CHECK IN" else "🚪 CHECK OUT"
-                AlertDialog.Builder(this)
-                    .setTitle("Mark $pendingAction")
-                    .setMessage("Name: ${employee.name}\nID: ${employee.employee_id}\nRole: ${employee.designation}")
-                    .setPositiveButton(label) { _, _ ->
-                        vm.markForEmployee(employee, pendingAction) {
-                            runOnUiThread {
-                                Toast.makeText(this, "${employee.name} marked $pendingAction ✅", Toast.LENGTH_SHORT).show()
-                                finish()
-                            }
-                        }
-                    }
-                    .setNegativeButton("Cancel") { _, _ ->
-                        tvStatus.text  = "Cancelled — scan again"
-                        scanProcessed = false
-                    }
-                    .setCancelable(false)
-                    .show()
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        cameraExecutor.shutdown()
-    }
-
-    // ---------------------------------------------------------- Factory
     companion object {
-        private const val EXTRA_ACTION       = "action"
-        private const val EXTRA_SCANNER_NAME = "scanner_name"
-
-        /** Launch this activity from [SecurityDashboardActivity]. */
-        fun start(context: Context, action: String, scannerName: String = "") {
+        private const val EXTRA_ACTION = "extra_action"
+        fun start(context: Context, action: String) {
             context.startActivity(
                 Intent(context, SecurityScanActivity::class.java)
                     .putExtra(EXTRA_ACTION, action)
-                    .putExtra(EXTRA_SCANNER_NAME, scannerName)
             )
         }
     }
