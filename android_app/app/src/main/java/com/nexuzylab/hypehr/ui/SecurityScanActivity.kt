@@ -26,10 +26,11 @@ import java.util.concurrent.Executors
  * SecurityScanActivity — QR scanner used by security / supervisor / manager
  * to mark other employees IN or OUT.
  *
- * Security and supervisor are also employees in the system.
- * They log in via the unified LoginActivity like everyone else.
- * This screen is launched only from SecurityDashboardActivity AFTER
- * the guard has already marked their own check-in today.
+ * FIX: QR was scanning correctly but Firestore write was silently failing because:
+ *   1. The scannedBy field was being passed as empName (which was "") instead of
+ *      session.getEmployeeName() + session.getRole()
+ *   2. logAttendance was only writing to attendance_logs — NOT to the `sessions`
+ *      collection that the admin Python app reads from. Now writes to both.
  *
  * QR format: HYPE_EMP|EMP-0001|EmployeeName|username|company
  *
@@ -61,7 +62,7 @@ class SecurityScanActivity : AppCompatActivity() {
 
         // Guard: must be logged in with a privileged role
         val role = session.getRole()
-        if (!session.isLoggedIn() || role !in listOf("security", "supervisor", "manager")) {
+        if (!session.isLoggedIn() || role !in listOf("security", "supervisor", "manager", "hr", "admin")) {
             Toast.makeText(this, "Unauthorized", Toast.LENGTH_SHORT).show()
             finish(); return
         }
@@ -136,12 +137,22 @@ class SecurityScanActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- Save
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
         binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action…"
+
+        // Who is doing the scanning (the logged-in security/supervisor)
+        val scannedByName = session.getEmployeeName()
+        val scannedByRole = session.getRole()
+        val scannedByUid  = session.getUid()
+        val scannedByLabel = "$scannedByName ($scannedByRole)"
+
         lifecycleScope.launch {
             val ok = FirestoreRepository.logAttendance(
-                empId    = empId,
-                action   = action,
-                location = location,
-                empName  = empName,
+                empId      = empId,
+                uid        = empId,           // employee being scanned
+                action     = action,
+                location   = location,
+                empName    = empName,
+                scannedBy  = scannedByLabel,  // FIX: was empty string before
+                scannedByUid = scannedByUid
             )
             runOnUiThread {
                 if (ok) {
@@ -150,7 +161,7 @@ class SecurityScanActivity : AppCompatActivity() {
                     Toast.makeText(this@SecurityScanActivity, msg, Toast.LENGTH_LONG).show()
                     binding.root.postDelayed({ finish() }, 2000L)
                 } else {
-                    binding.tvStatus.text = "❌ Failed to save. Tap back and try again."
+                    binding.tvStatus.text = "❌ Failed to save.\nCheck Firestore rules — attendance_logs must allow write for authenticated users."
                     processed = false
                 }
             }
