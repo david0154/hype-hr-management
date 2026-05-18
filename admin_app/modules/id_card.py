@@ -1,9 +1,6 @@
 """
 Employee ID Card Generator — Hype HR Management
 Redesigned v2: Modern card with gradient header, circular photo, badge ribbon
-FIX: company_name fallback chain now checks 6 field names so Security/Supervisor
-     users whose employee doc stores the name under a different key still get
-     the correct company name on their ID card.
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
 import tkinter as tk
@@ -17,13 +14,13 @@ from modules.roles import has_permission
 CARD_W, CARD_H = 1011, 638
 
 # ── Colour palette
-C_BG        = "#0d1b2a"
-C_HEADER    = "#f77f00"
-C_ACCENT    = "#f0c040"
+C_BG        = "#0d1b2a"       # dark navy background
+C_HEADER    = "#f77f00"       # orange header
+C_ACCENT    = "#f0c040"       # gold accent
 C_WHITE     = "#FFFFFF"
-C_MUTED     = "#b0c4d8"
-C_DARK      = "#07111c"
-C_STRIPE    = "#1a2f45"
+C_MUTED     = "#b0c4d8"       # light blue-grey
+C_DARK      = "#07111c"       # very dark for footer
+C_STRIPE    = "#1a2f45"       # mid section
 
 
 def _rgb(hex_: str):
@@ -57,6 +54,7 @@ def _draw_rounded_rect(draw, xy, radius, fill):
 
 
 def _circle_photo(photo: Image.Image, size: int) -> Image.Image:
+    """Crop photo to a circle."""
     photo = photo.resize((size, size), Image.LANCZOS)
     mask  = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
@@ -65,54 +63,40 @@ def _circle_photo(photo: Image.Image, size: int) -> Image.Image:
     return result
 
 
-def _resolve_company_name(emp: dict, company_info: dict) -> str:
-    """
-    FIX: When Admin adds a Security Guard or Supervisor their employee doc
-    may not have 'company_name' set (only 'company', 'org', etc.).
-    Try every known field name before falling back to company_info from settings.
-    """
-    # 1. Try employee doc first (custom override per card)
-    for key in ("company_name", "company", "org", "organisation", "organization"):
-        val = emp.get(key, "").strip()
-        if val:
-            return val
-    # 2. Fall back to company settings document
-    for key in ("company_name", "name", "company"):
-        val = company_info.get(key, "").strip()
-        if val:
-            return val
-    return "HYPE PVT LTD"
-
-
 def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
     """Return a high-quality PIL Image of the ID card (1011 x 638 px)."""
     img  = Image.new("RGB", (CARD_W, CARD_H), _rgb(C_BG))
     draw = ImageDraw.Draw(img)
 
-    # ── 1. Header bar
+    # ── 1. Header bar with orange + diagonal stripe ─────────────────────
     HEADER_H = 150
     draw.rectangle([0, 0, CARD_W, HEADER_H], fill=_rgb(C_HEADER))
+    # Diagonal dark stripe for style
     draw.polygon([(CARD_W - 320, 0), (CARD_W, 0),
                   (CARD_W, HEADER_H), (CARD_W - 450, HEADER_H)],
                  fill=_rgb(C_DARK))
 
-    # FIX: use _resolve_company_name instead of bare .get()
-    company_name = _resolve_company_name(emp, company_info)
+    # Company name in header
+    company_name = company_info.get("company_name",
+                   company_info.get("name", "HYPE PVT LTD"))
     f_company = _load_font(52, bold=True)
     draw.text((36, 22), company_name.upper(), font=f_company, fill=_rgb(C_WHITE))
     f_tagline = _load_font(22)
-    addr = company_info.get("address1", company_info.get("address", ""))
+    addr = company_info.get("address1",
+           company_info.get("address", ""))
     if addr:
         draw.text((38, 90), addr[:60], font=f_tagline, fill=_rgb(C_MUTED))
+    # "EMPLOYEE ID CARD" label in dark stripe
     f_badge = _load_font(20, bold=True)
     draw.text((CARD_W - 300, 55), "EMPLOYEE", font=f_badge, fill=_rgb(C_ACCENT))
     draw.text((CARD_W - 300, 82), "ID CARD",  font=f_badge, fill=_rgb(C_ACCENT))
 
-    # ── 2. Photo circle
+    # ── 2. Photo circle ──────────────────────────────────────────────────
     PHOTO_SIZE = 180
     PHOTO_X    = 36
-    PHOTO_Y    = HEADER_H + 30
+    PHOTO_Y    = HEADER_H + 30   # 180
 
+    # Orange ring behind photo
     ring_pad = 8
     draw.ellipse([
         PHOTO_X - ring_pad, PHOTO_Y - ring_pad,
@@ -133,6 +117,7 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
             pass
 
     if not photo_loaded:
+        # Placeholder circle with initials
         draw.ellipse([PHOTO_X, PHOTO_Y,
                       PHOTO_X + PHOTO_SIZE, PHOTO_Y + PHOTO_SIZE],
                      fill=_rgb(C_STRIPE))
@@ -142,8 +127,8 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
                    PHOTO_Y + PHOTO_SIZE // 2 - 38),
                   initials, font=f_init, fill=_rgb(C_ACCENT))
 
-    # ── 3. Employee details
-    DX     = PHOTO_X + PHOTO_SIZE + 40
+    # ── 3. Employee details section ───────────────────────────────────
+    DX     = PHOTO_X + PHOTO_SIZE + 40   # 256
     f_name = _load_font(50, bold=True)
     f_info = _load_font(26)
     f_lbl  = _load_font(22)
@@ -153,6 +138,7 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
     draw.text((DX, name_y), emp.get("name", "").upper(),
               font=f_name, fill=_rgb(C_WHITE))
 
+    # Coloured badge for Employee ID
     ID_Y = name_y + 62
     id_text = f"  {emp.get('employee_id', '')}  "
     bbox = draw.textbbox((0, 0), id_text, font=f_bold)
@@ -161,36 +147,29 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
                        fill=_rgb(C_HEADER))
     draw.text((DX + 10, ID_Y + 4), id_text.strip(), font=f_bold, fill=_rgb(C_WHITE))
 
+    # Designation & Department with icons
     rows_y = ID_Y + 50
     for icon, value in [
-        ("\U0001f4bc", emp.get("designation", "Employee")),
-        ("\U0001f3e2", emp.get("department",  "General")),
-        ("\U0001f4f1", emp.get("mobile",      "")),
-        ("\U0001f4c5", "DOJ: " + emp.get("date_of_join", "")),
+        ("💼", emp.get("designation", "Employee")),
+        ("🏢", emp.get("department",  "General")),
+        ("📱", emp.get("mobile",      "")),
+        ("📅", "DOJ: " + emp.get("date_of_join", "")),
     ]:
         if value and value.strip():
             draw.text((DX, rows_y), f"{icon}  {value}",
                       font=f_info, fill=_rgb(C_MUTED))
             rows_y += 38
 
-    # ── 4. Separator
+    # ── 4. Separator line ────────────────────────────────────────────────
     LINE_Y = CARD_H - 120
     draw.rectangle([30, LINE_Y, CARD_W - 30, LINE_Y + 2], fill=_rgb(C_STRIPE))
 
-    # ── 5. QR code
-    # FIX: QR now encodes HYPE_EMP|<id>|<name>|<username>|<company>
-    # so Android SecurityScanActivity can parse it correctly.
+    # ── 5. QR code (bottom-right) ────────────────────────────────────
     QR_SIZE = 160
     QR_X    = CARD_W - QR_SIZE - 36
     QR_Y    = CARD_H - QR_SIZE - 70
 
-    emp_id       = emp.get("employee_id", "UNKNOWN")
-    emp_name_qr  = emp.get("name", "").replace("|", " ")
-    username_qr  = emp.get("username",
-                   emp.get("email", "").split("@")[0]).replace("|", " ")
-    company_qr   = company_name.lower().replace(" ", ".").replace("|", "")
-    qr_data = f"HYPE_EMP|{emp_id}|{emp_name_qr}|{username_qr}|{company_qr}"
-
+    qr_data = emp.get("employee_id", "UNKNOWN")
     qr = qrcode.QRCode(box_size=6, border=2,
                        error_correction=qrcode.constants.ERROR_CORRECT_H)
     qr.add_data(qr_data)
@@ -204,7 +183,7 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
     draw.text((QR_X + 28, QR_Y + QR_SIZE + 4),
               "Scan to verify", font=f_scan, fill=_rgb(C_MUTED))
 
-    # ── 6. Footer
+    # ── 6. Footer bar ───────────────────────────────────────────────────
     FOOT_Y = CARD_H - 48
     draw.rectangle([0, FOOT_Y, CARD_W, CARD_H], fill=_rgb(C_HEADER))
     f_foot = _load_font(20)
@@ -212,12 +191,13 @@ def generate_id_card_image(emp: dict, company_info: dict) -> Image.Image:
     phone  = company_info.get("phone", "")
     web    = company_info.get("website", "")
     foot_parts = []
-    if email: foot_parts.append(f"\u2709  {email}")
-    if phone: foot_parts.append(f"\U0001f4de  {phone}")
-    if web:   foot_parts.append(f"\U0001f310  {web}")
+    if email: foot_parts.append(f"✉  {email}")
+    if phone: foot_parts.append(f"📞  {phone}")
+    if web:   foot_parts.append(f"🌐  {web}")
     foot_text = "   |   ".join(foot_parts)
     draw.text((36, FOOT_Y + 12), foot_text, font=f_foot, fill=_rgb(C_WHITE))
 
+    # Valid till in footer right
     import datetime
     valid_year = datetime.datetime.now().year + 1
     draw.text((CARD_W - 200, FOOT_Y + 12),
@@ -240,15 +220,15 @@ class IdCardModule:
     def _build_ui(self):
         top = tk.Frame(self.parent, bg="#1a2740")
         top.pack(fill="x", pady=(0, 8))
-        tk.Label(top, text="\U0001fa9a Employee ID Card Generator",
+        tk.Label(top, text="🪚 Employee ID Card Generator",
                  font=("Arial", 14, "bold"), bg="#1a2740", fg="white").pack(side="left", padx=10)
 
         if has_permission(self.role, "id_card"):
-            tk.Button(top, text="\U0001f5a8 Generate Selected",
+            tk.Button(top, text="🖨 Generate Selected",
                       bg="#f77f00", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=12, pady=5, cursor="hand2",
                       command=self._generate_selected).pack(side="right", padx=5)
-            tk.Button(top, text="\U0001f4e6 Generate All",
+            tk.Button(top, text="📦 Generate All",
                       bg="#2980b9", fg="white", font=("Arial", 9, "bold"),
                       relief="flat", padx=12, pady=5, cursor="hand2",
                       command=self._generate_all).pack(side="right", padx=5)
@@ -287,7 +267,7 @@ class IdCardModule:
                 if query and query.lower() not in name.lower() \
                         and query.lower() not in e.get("employee_id", "").lower():
                     continue
-                has_photo = "\u2705" if e.get("photo_url") else "\u274c"
+                has_photo = "✅" if e.get("photo_url") else "❌"
                 self.tree.insert("", "end", iid=e["employee_id"], values=(
                     e["employee_id"], name,
                     e.get("designation", ""),
@@ -354,6 +334,7 @@ class IdCardModule:
         win.configure(bg="#0d1b2a")
         win.resizable(False, False)
 
+        # Scale down for preview (display at 60%)
         preview_w = int(CARD_W * 0.6)
         preview_h = int(CARD_H * 0.6)
         card_small = card.resize((preview_w, preview_h), Image.LANCZOS)
@@ -371,7 +352,7 @@ class IdCardModule:
                 card.save(path, dpi=(300, 300))
                 messagebox.showinfo("Saved", f"ID card saved:\n{path}", parent=win)
 
-        tk.Button(win, text="\U0001f4be Save HD PNG",
+        tk.Button(win, text="💾 Save HD PNG",
                   bg="#27ae60", fg="white", font=("Arial", 10, "bold"),
                   relief="flat", padx=15, pady=6, cursor="hand2",
                   command=save).pack(pady=(0, 15))
