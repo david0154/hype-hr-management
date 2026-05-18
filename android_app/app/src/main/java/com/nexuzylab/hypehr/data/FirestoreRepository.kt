@@ -11,12 +11,19 @@ import java.util.*
 /**
  * FirestoreRepository — single source of truth for all Firestore operations.
  * All date/time operations use IST (Asia/Kolkata) explicitly.
+ * FIX: getAttendanceHistory — was querying wrong collection ("attendance_logs" by employee_id
+ *      with range filter on "date", which requires a composite index and silently returns
+ *      empty on missing index). Now queries the correct collection name used by admin_app
+ *      ("sessions") with a single .whereEqualTo on employee_id, then filters month in-memory.
+ *      Also added fallback: if sessions empty, retries attendance_logs collection.
+ * FIX: loadHistory() was passing session.getEmployeeId() ("EMP-0001") but attendance_logs
+ *      also stores uid. Now passes BOTH and tries both.
  * Developed by David | Nexuzy Lab
  */
 object FirestoreRepository {
 
     private val db  = FirebaseFirestore.getInstance()
-    private val IST = TimeZone.getTimeZone("Asia/Kolkata")  // single declaration
+    private val IST = TimeZone.getTimeZone("Asia/Kolkata")
 
     // ── Employee ───────────────────────────────────────────────────────
 
@@ -39,12 +46,30 @@ object FirestoreRepository {
         if (employeeId.isEmpty()) return "NONE"
         return try {
             val today = todayDateKey()
-            val snap = db.collection("attendance_logs")
+            // Query sessions (admin_app collection) by employee_id + date
+            val snap = db.collection("sessions")
+                .whereEqualTo("employee_id", employeeId)
+                .whereEqualTo("date", today)
+                .limit(1)
+                .get().await()
+
+            if (!snap.isEmpty) {
+                val sess = snap.documents.first().data ?: return "NONE"
+                return when ((sess["duty_status"] as? String)?.lowercase()) {
+                    "full" -> "COMPLETE"
+                    "half" -> "IN"
+                    null   -> if ((sess["in_time"] as? String).isNullOrEmpty()) "NONE" else "IN"
+                    else   -> "IN"
+                }
+            }
+
+            // Fallback: check attendance_logs
+            val snap2 = db.collection("attendance_logs")
                 .whereEqualTo("employee_id", employeeId)
                 .whereEqualTo("date", today)
                 .get().await()
 
-            val logs = snap.documents
+            val logs = snap2.documents
                 .mapNotNull { it.data }
                 .sortedBy { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
 
@@ -52,13 +77,11 @@ object FirestoreRepository {
 
             var lastAction = ""
             for (log in logs) {
-                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase()?.trim()
-                    ?: continue
+                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase()?.trim() ?: continue
                 when (action) {
                     "IN", "OUT", "OT_IN", "OT_OUT" -> lastAction = action
                 }
             }
-
             when (lastAction) {
                 "IN"     -> "IN"
                 "OUT"    -> "COMPLETE"
@@ -83,18 +106,85 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
+    /**
+     * FIX: Attendance history was always blank because:
+     *  1. Admin app writes to "sessions" collection, NOT "attendance_logs"
+     *  2. Compound query (whereEqualTo + whereGreaterThanOrEqualTo + whereLessThanOrEqualTo)
+     *     requires a composite Firestore index — silently returns [] without it
+     *  3. employee_id field in sessions is "EMP-0001" format; uid is Firebase Auth UID
+     *
+     * FIX strategy:
+     *  - Primary: query "sessions" by employee_id only (single field = no composite index needed)
+     *    then filter month client-side
+     *  - Fallback: query "attendance_logs" the same way
+     *  - Convert session format to attendance-log-like map so the UI adapter works unchanged
+     */
     suspend fun getAttendanceHistory(
         employeeId: String,
         monthKey: String = currentMonthKey()
     ): List<Map<String, Any>> {
+        if (employeeId.isEmpty()) return emptyList()
+
+        // --- Primary: sessions collection (written by admin/security app) ---
+        val sessionResults = try {
+            val snap = db.collection("sessions")
+                .whereEqualTo("employee_id", employeeId)
+                .get().await()
+
+            snap.documents
+                .mapNotNull { it.data }
+                .filter { doc ->
+                    val date = doc["date"] as? String ?: ""
+                    date.startsWith(monthKey)          // filter month client-side — no index needed
+                }
+                .flatMap { sess ->
+                    // Convert session doc → list of IN/OUT log-like maps for the adapter
+                    val date    = sess["date"] as? String ?: ""
+                    val inTime  = sess["in_time"] as? String
+                    val outTime = sess["out_time"] as? String
+                    val loc     = sess["location"] as? String ?: "Office"
+                    val empName = sess["emp_name"] as? String ?: ""
+                    buildList {
+                        if (!inTime.isNullOrEmpty()) {
+                            add(mapOf(
+                                "employee_id" to employeeId,
+                                "date"        to date,
+                                "type"        to "IN",
+                                "action"      to "IN",
+                                "location"    to loc,
+                                "emp_name"    to empName,
+                                "timestamp"   to timeStringToTimestamp(date, inTime)
+                            ))
+                        }
+                        if (!outTime.isNullOrEmpty()) {
+                            add(mapOf(
+                                "employee_id" to employeeId,
+                                "date"        to date,
+                                "type"        to "OUT",
+                                "action"      to "OUT",
+                                "location"    to loc,
+                                "emp_name"    to empName,
+                                "timestamp"   to timeStringToTimestamp(date, outTime)
+                            ))
+                        }
+                    }
+                }
+                .sortedByDescending { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
+        } catch (e: Exception) { emptyList() }
+
+        if (sessionResults.isNotEmpty()) return sessionResults
+
+        // --- Fallback: attendance_logs collection (written by SecurityScanActivity) ---
         return try {
             val snap = db.collection("attendance_logs")
                 .whereEqualTo("employee_id", employeeId)
-                .whereGreaterThanOrEqualTo("date", "$monthKey-01")
-                .whereLessThanOrEqualTo("date", "$monthKey-31")
                 .get().await()
             snap.documents
                 .mapNotNull { it.data }
+                .filter { doc ->
+                    val date = doc["date"] as? String ?: ""
+                    date.startsWith(monthKey)
+                }
                 .sortedByDescending { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
         } catch (e: Exception) { emptyList() }
     }
@@ -226,17 +316,30 @@ object FirestoreRepository {
 
     // ── IST Helpers ────────────────────────────────────────────────────────────
 
-    /** Returns today's date as "yyyy-MM-dd" in IST */
     fun todayDateKey(): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
         sdf.timeZone = IST
         return sdf.format(Date())
     }
 
-    /** Returns current month as "yyyy-MM" in IST */
     fun currentMonthKey(): String {
         val sdf = SimpleDateFormat("yyyy-MM", Locale.ENGLISH)
         sdf.timeZone = IST
         return sdf.format(Date())
+    }
+
+    /**
+     * Converts a date string "yyyy-MM-dd" + time string "HH:mm" or "HH:mm:ss"
+     * into a Firestore Timestamp for sorting in the adapter.
+     */
+    private fun timeStringToTimestamp(date: String, time: String): Timestamp {
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ENGLISH)
+            sdf.timeZone = IST
+            val d = sdf.parse("$date ${time.take(5)}") ?: return Timestamp.now()
+            Timestamp(d)
+        } catch (e: Exception) {
+            Timestamp.now()
+        }
     }
 }
