@@ -1,15 +1,15 @@
 /**
  * Hype HR Management — Data Models
  *
+ * FIX: AttendanceLog now includes a `date` field ("yyyy-MM-dd").
+ *      The ViewModel queries attendance_logs by .whereEqualTo("date", today)
+ *      which requires this field to be present in every saved document.
+ *      Without it, recent scans always returned 0 results.
+ *
  * @author  David
  * @org     Nexuzy Lab
- * @email   nexuzylab@gmail.com
- * @github  https://github.com/david0154
- * @project Hype HR Management System
  */
 package com.nexuzylab.hypehr.model
-
-import com.google.firebase.firestore.PropertyName
 
 data class Employee(
     val employee_id: String = "",
@@ -25,16 +25,17 @@ data class Employee(
     val payment_mode: String = "CASH",
     val active: Boolean = true,
     val company: String = "",
-    val role: String = "employee",   // employee | security | supervisor
+    val role: String = "employee",
     val pin_hash: String = ""
 )
 
 data class AttendanceLog(
     val employee_id: String = "",
     val name: String = "",
-    val timestamp: String = "",
+    val timestamp: String = "",   // "yyyy-MM-dd HH:mm:ss"
+    val date: String = "",        // "yyyy-MM-dd" — required for Firestore date query
     val location: String = "",
-    val action: String = "",   // IN | OUT
+    val action: String = "",      // IN | OUT
     val scanned_by: String = "self"
 )
 
@@ -43,14 +44,14 @@ data class AttendanceSession(
     val date: String = "",
     val duty_hours: Double = 0.0,
     val ot_hours: Double = 0.0,
-    val duty_status: String = "absent",  // absent | half | full
-    val ot_status: String = "none"       // none | half | full
+    val duty_status: String = "absent",
+    val ot_status: String = "none"
 )
 
 data class SalaryRecord(
     val employee_id: String = "",
     val month: String = "",
-    val month_key: String = "",     // yyyy-MM
+    val month_key: String = "",
     val year: Int = 0,
     val base_salary: Double = 0.0,
     val attendance_salary: Double = 0.0,

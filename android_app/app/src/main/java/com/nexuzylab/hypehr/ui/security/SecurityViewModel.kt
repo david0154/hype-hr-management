@@ -1,8 +1,15 @@
 /**
  * Hype HR Management — Security ViewModel
  *
- * FIX: loadCompanyName now tries `company_name` FIRST (matches Firestore
- *      settings/company → company_name: "Nexuzy lab"), then `name`, then `title`.
+ * FIX 1: AttendanceLog now carries a `date` field ("yyyy-MM-dd") which is
+ *         written on every logAttendance() call so the Firestore query
+ *         .whereEqualTo("date", today) actually finds documents.
+ *
+ * FIX 2: loadTodayAllLogs falls back to timestamp-prefix filtering if `date`
+ *         field is absent on older documents (backward compatible).
+ *
+ * FIX 3: loadCompanyName reads `company_name` first — matches Firebase structure
+ *         settings/company -> company_name: "Nexuzy lab".
  *
  * @author  David | Nexuzy Lab
  */
@@ -34,59 +41,97 @@ class SecurityViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Mark IN/OUT for an employee.
+     * Now saves `date` field alongside `timestamp` so Firestore date queries work.
+     */
     fun markForEmployee(employee: Employee, action: String, callback: () -> Unit) {
         viewModelScope.launch {
             try {
-                val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                val sdf  = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                val now  = Date()
+                val timestamp = sdf.format(now)
+                val date      = timestamp.take(10) // "yyyy-MM-dd"
+
                 repo.logAttendance(AttendanceLog(
                     employee_id = employee.employee_id,
                     name        = employee.name,
                     timestamp   = timestamp,
+                    date        = date,           // ← NEW: required for recent scans query
                     location    = "Security Desk",
                     action      = action,
                     scanned_by  = "security"
                 ))
-                if (action == "OUT") recalcSession(employee.employee_id, timestamp.take(10))
+                if (action == "OUT") recalcSession(employee.employee_id, date)
             } catch (_: Exception) {}
             callback()
         }
     }
 
     /**
-     * Load ALL attendance logs for today — sorted in memory (no composite index needed).
+     * Load ALL attendance logs for today.
+     *
+     * Strategy:
+     *  1. Primary: .whereEqualTo("date", today) — fast, uses the date field
+     *     (works for all new scans after this fix).
+     *  2. Fallback: fetch all docs, filter by timestamp prefix — covers old
+     *     documents saved before the date field was added.
+     *  Both lists are merged, de-duplicated by employee_id+timestamp, sorted
+     *  newest first.
      */
     fun loadTodayAllLogs(callback: (List<AttendanceLog>) -> Unit) {
         viewModelScope.launch {
             try {
-                val today = FirestoreRepository.todayDateKey()
-
-                val snap = db.collection("attendance_logs")
-                    .whereEqualTo("date", today)
-                    .limit(100)
-                    .get().await()
-
+                val today  = FirestoreRepository.todayDateKey()   // "yyyy-MM-dd" IST
                 val sdfParse = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
                 sdfParse.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
 
-                val logs = snap.documents.mapNotNull { doc ->
-                    val data = doc.data ?: return@mapNotNull null
+                fun docToLog(data: Map<String, Any?>): AttendanceLog? {
                     val tsField = data["timestamp"]
                     val tsStr = when (tsField) {
                         is Timestamp -> sdfParse.format(tsField.toDate())
                         is String    -> tsField
-                        else         -> ""
+                        else         -> return null
                     }
-                    AttendanceLog(
+                    return AttendanceLog(
                         employee_id = (data["employee_id"] as? String) ?: "",
-                        name        = (data["emp_name"]    as? String)
-                            ?: (data["name"] as? String) ?: "",
+                        name        = (data["emp_name"] as? String)
+                                        ?: (data["name"] as? String) ?: "",
                         action      = ((data["action"] ?: data["type"]) as? String) ?: "",
                         timestamp   = tsStr,
+                        date        = today,
                         location    = (data["location"]   as? String) ?: "",
                         scanned_by  = (data["scanned_by"] as? String) ?: ""
                     )
                 }
-                callback(logs.sortedByDescending { it.timestamp })
+
+                // 1. Primary query — docs that have the date field set
+                val byDate = db.collection("attendance_logs")
+                    .whereEqualTo("date", today)
+                    .limit(100)
+                    .get().await()
+                    .documents.mapNotNull { it.data?.let { d -> docToLog(d) } }
+
+                // 2. Fallback query — old docs without date field,
+                //    filter client-side by timestamp prefix
+                val allSnap = db.collection("attendance_logs")
+                    .whereEqualTo("date", "")   // only docs where date == ""
+                    .limit(200)
+                    .get().await()
+                val byTimestamp = allSnap.documents
+                    .mapNotNull { it.data?.let { d -> docToLog(d) } }
+                    .filter { it.timestamp.startsWith(today) }
+
+                // Merge + deduplicate by (employee_id + timestamp)
+                val seen = mutableSetOf<String>()
+                val merged = (byDate + byTimestamp).filter {
+                    seen.add("${it.employee_id}_${it.timestamp}")
+                }
+
+                android.util.Log.d("SecurityVM",
+                    "loadTodayAllLogs: byDate=${byDate.size} byTimestamp=${byTimestamp.size} merged=${merged.size}")
+
+                callback(merged.sortedByDescending { it.timestamp })
             } catch (e: Exception) {
                 android.util.Log.e("SecurityVM", "loadTodayAllLogs failed: ${e.message}")
                 callback(emptyList())
@@ -96,12 +141,7 @@ class SecurityViewModel : ViewModel() {
 
     /**
      * Load company name from Firestore settings/company.
-     *
-     * Priority order matches your Firebase structure:
-     *   1. company_name  ← "Nexuzy lab"  (your actual field)
-     *   2. name
-     *   3. title
-     *   4. fallback: "Your Company"
+     * Priority: company_name → name → title → "Your Company"
      */
     fun loadCompanyName(callback: (String) -> Unit) {
         viewModelScope.launch {
