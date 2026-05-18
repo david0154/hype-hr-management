@@ -8,15 +8,17 @@
     android:gravity="center_horizontal"
     android:padding="32dp">
 
-    <!-- Employee Photo -->
-    <de.hdodenhof.circleimageview.CircleImageView
+    <!-- Employee Photo (standard ImageView, no CircleImageView dependency needed) -->
+    <ImageView
         android:id="@+id/ivEmpPhoto"
         android:layout_width="90dp"
         android:layout_height="90dp"
         android:layout_marginTop="48dp"
         android:src="@drawable/ic_person_placeholder"
-        app:civ_border_color="#6C63FF"
-        app:civ_border_width="3dp" />
+        android:scaleType="centerCrop"
+        android:background="@drawable/bg_circle_photo"
+        android:clipToOutline="true"
+        android:contentDescription="Employee photo" />
 
     <!-- Employee Name -->
     <TextView
@@ -60,7 +62,7 @@
             android:letterSpacing="0.4" />
     </com.google.android.material.textfield.TextInputLayout>
 
-    <!-- Login Button -->
+    <!-- Unlock Button -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnEnterPin"
         android:layout_width="match_parent"
@@ -73,7 +75,7 @@
         app:backgroundTint="#6C63FF"
         app:cornerRadius="12dp" />
 
-    <!-- Use Password instead -->
+    <!-- Fallback to password login -->
     <TextView
         android:id="@+id/tvLoginWithPassword"
         android:layout_width="wrap_content"
