@@ -18,6 +18,12 @@ import java.io.FileOutputStream
 
 /**
  * IdCardActivity — Generates and displays the employee ID card.
+ * FIX: Was calling db.collection("employees").document(empId) where empId was the
+ *      Firebase Auth UID (correct). But if intent passed "employee_id" (EMP-0001)
+ *      instead of uid, the doc lookup would fail silently.
+ *      Fix: try uid first, fallback to whereEqualTo("employee_id") query.
+ * FIX: downloadCard uses getExternalStoragePublicDirectory which needs
+ *      WRITE_EXTERNAL_STORAGE permission on Android < 10. Added MediaStore API fallback.
  * Developed by David | Nexuzy Lab
  */
 class IdCardActivity : AppCompatActivity() {
@@ -25,6 +31,7 @@ class IdCardActivity : AppCompatActivity() {
     private lateinit var binding: ActivityIdCardBinding
     private val db  = FirebaseFirestore.getInstance()
     private val TAG = "IdCardActivity"
+    private var resolvedUid = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,38 +39,68 @@ class IdCardActivity : AppCompatActivity() {
         setContentView(binding.root)
         supportActionBar?.title = "Employee ID Card"
 
-        val empId = intent.getStringExtra("employee_id")
+        // Accept either uid or employee_id from intent
+        val empIdOrUid = intent.getStringExtra("employee_id")
             ?: FirebaseAuth.getInstance().currentUser?.uid
-        if (empId == null) {
+        if (empIdOrUid == null) {
             Toast.makeText(this, "Employee ID not found", Toast.LENGTH_SHORT).show()
             finish()
             return
         }
-        loadEmployee(empId)
+        loadEmployee(empIdOrUid)
     }
 
-    private fun loadEmployee(empId: String) {
-        db.collection("employees").document(empId).get()
+    /**
+     * FIX: Try direct document lookup first (works when empIdOrUid is a Firebase UID).
+     * If doc doesn't exist, fallback to whereEqualTo("employee_id") for EMP-XXXX format.
+     */
+    private fun loadEmployee(empIdOrUid: String) {
+        db.collection("employees").document(empIdOrUid).get()
             .addOnSuccessListener { doc ->
-                if (!doc.exists()) {
-                    Toast.makeText(this, "Employee not found", Toast.LENGTH_SHORT).show()
-                    return@addOnSuccessListener
+                if (doc.exists()) {
+                    resolvedUid = doc.id
+                    renderFromDoc(doc)
+                } else {
+                    // Fallback: search by employee_id field (EMP-0001 format)
+                    db.collection("employees")
+                        .whereEqualTo("employee_id", empIdOrUid)
+                        .limit(1)
+                        .get()
+                        .addOnSuccessListener { snap ->
+                            val fallbackDoc = snap.documents.firstOrNull()
+                            if (fallbackDoc == null || !fallbackDoc.exists()) {
+                                Toast.makeText(this, "Employee not found", Toast.LENGTH_SHORT).show()
+                                return@addOnSuccessListener
+                            }
+                            resolvedUid = fallbackDoc.id
+                            renderFromDoc(fallbackDoc)
+                        }
+                        .addOnFailureListener { e ->
+                            Log.e(TAG, "Fallback lookup failed: ${e.message}")
+                            Toast.makeText(this, "Error loading employee data", Toast.LENGTH_SHORT).show()
+                        }
                 }
-                val name        = doc.getString("name")        ?: "N/A"
-                val employeeId  = doc.getString("employee_id") ?: empId
-                val designation = doc.getString("designation") ?: "Employee"
-                val aadhaar     = doc.getString("aadhaar")     ?: ""
-                val maskedAadh  = if (aadhaar.length >= 4) "XXXX-XXXX-${aadhaar.takeLast(4)}" else "—"
-
-                db.collection("settings").document("company").get()
-                    .addOnSuccessListener { company ->
-                        val companyName = company.getString("name") ?: "Hype Pvt Ltd"
-                        renderCard(empId, employeeId, name, designation, maskedAadh, companyName)
-                    }
             }
             .addOnFailureListener { e ->
                 Log.e(TAG, "Error loading employee: ${e.message}")
                 Toast.makeText(this, "Error loading employee data", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun renderFromDoc(doc: com.google.firebase.firestore.DocumentSnapshot) {
+        val name        = doc.getString("name")        ?: "N/A"
+        val employeeId  = doc.getString("employee_id") ?: doc.id
+        val designation = doc.getString("designation") ?: "Employee"
+        val aadhaar     = doc.getString("aadhaar")     ?: ""
+        val maskedAadh  = if (aadhaar.length >= 4) "XXXX-XXXX-${aadhaar.takeLast(4)}" else "—"
+
+        db.collection("settings").document("company").get()
+            .addOnSuccessListener { company ->
+                val companyName = company.getString("name") ?: "Hype Pvt Ltd"
+                renderCard(resolvedUid, employeeId, name, designation, maskedAadh, companyName)
+            }
+            .addOnFailureListener {
+                renderCard(resolvedUid, employeeId, name, designation, maskedAadh, "Hype Pvt Ltd")
             }
     }
 
@@ -85,8 +122,8 @@ class IdCardActivity : AppCompatActivity() {
             Log.e(TAG, "QR generation failed: ${e.message}")
         }
 
-        binding.btnShare.setOnClickListener   { shareCard(uid) }
-        binding.btnDownload.setOnClickListener { downloadCard(uid) }
+        binding.btnShare.setOnClickListener    { shareCard(uid) }
+        binding.btnDownload.setOnClickListener { downloadCard(uid, employeeId) }
     }
 
     private fun buildCardBitmap(): Bitmap {
@@ -107,13 +144,13 @@ class IdCardActivity : AppCompatActivity() {
             color = Color.WHITE; textSize = 26f; typeface = Typeface.DEFAULT_BOLD
         }
         c.drawText("Name:",        30f, 115f, infoSm)
-        c.drawText(binding.tvName.text.toString(), 150f, 115f, infoBig)
+        c.drawText(binding.tvName.text.toString(),        150f, 115f, infoBig)
         c.drawText("ID:",          30f, 155f, infoSm)
-        c.drawText(binding.tvEmpId.text.toString(), 150f, 155f, infoSm)
+        c.drawText(binding.tvEmpId.text.toString(),       150f, 155f, infoSm)
         c.drawText("Designation:", 30f, 195f, infoSm)
         c.drawText(binding.tvDesignation.text.toString(), 200f, 195f, infoSm)
         c.drawText("Aadhaar:",     30f, 235f, infoSm)
-        c.drawText(binding.tvAadhaar.text.toString(), 175f, 235f, infoSm)
+        c.drawText(binding.tvAadhaar.text.toString(),     175f, 235f, infoSm)
         val qrBm = binding.ivQrCode.let {
             val d = it.drawable ?: return@let null
             val qrBitmap = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888)
@@ -139,14 +176,42 @@ class IdCardActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(intent, "Share ID Card"))
     }
 
-    private fun downloadCard(uid: String) {
-        val bm   = buildCardBitmap()
-        val file = File(
-            android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_DOWNLOADS
-            ), "HypeHR_IDCard_${uid}.png"
-        )
-        FileOutputStream(file).use { bm.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        Toast.makeText(this, "ID Card saved to Downloads", Toast.LENGTH_SHORT).show()
+    /**
+     * FIX: Use MediaStore API for Android 10+ to avoid WRITE_EXTERNAL_STORAGE crash.
+     * Falls back to legacy path for Android 9 and below.
+     */
+    private fun downloadCard(uid: String, employeeId: String) {
+        val bm       = buildCardBitmap()
+        val fileName = "HypeHR_IDCard_${employeeId}.png"
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE,    "image/png")
+                    put(android.provider.MediaStore.Downloads.IS_PENDING,   1)
+                }
+                val resolver = contentResolver
+                val uri      = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: run {
+                    Toast.makeText(this, "Could not save file", Toast.LENGTH_SHORT).show(); return
+                }
+                resolver.openOutputStream(uri)?.use { bm.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                values.clear()
+                values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } else {
+                val file = File(
+                    android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    ), fileName
+                )
+                FileOutputStream(file).use { bm.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            }
+            Toast.makeText(this, "ID Card saved to Downloads ✅", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Download failed: ${e.message}")
+            Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 }

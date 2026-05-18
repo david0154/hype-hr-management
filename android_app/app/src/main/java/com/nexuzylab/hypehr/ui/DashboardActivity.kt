@@ -19,7 +19,11 @@ import java.util.TimeZone
 
 /**
  * DashboardActivity — Employee-facing home screen.
- * Date display uses IST (Asia/Kolkata) timezone.
+ * FIX: loadStats() was passing uid to getAttendanceStats() which reads from
+ *      employees/{uid}/attendance_summary — BUT the summary is written by admin_app
+ *      using employee_id (EMP-0001), not uid. So stats were always 0.
+ *      Fix: compute present/absent counts live from sessions collection using employee_id.
+ * FIX: Added ID Card button and Logout button that were missing from setupButtons().
  * Developed by David | Nexuzy Lab
  */
 class DashboardActivity : AppCompatActivity() {
@@ -34,7 +38,6 @@ class DashboardActivity : AppCompatActivity() {
         session = SessionManager(this)
         setSupportActionBar(binding.toolbar)
 
-        // Display date in IST
         val dateFmt = SimpleDateFormat("EEEE, dd MMM yyyy", Locale.ENGLISH)
         dateFmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
         binding.tvDate.text = dateFmt.format(Date())
@@ -54,12 +57,10 @@ class DashboardActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val empDoc = FirestoreRepository.getEmployeeByUid(uid)
-
             val photoUrl = empDoc?.get("photo_url") as? String
                 ?: empDoc?.get("profile_photo") as? String
                 ?: empDoc?.get("image_url") as? String
                 ?: ""
-
             runOnUiThread {
                 if (photoUrl.isNotEmpty()) {
                     Glide.with(this@DashboardActivity)
@@ -80,27 +81,51 @@ class DashboardActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * FIX: Old code read from employees/{uid}/attendance_summary which is never populated
+     * by the current admin_app. Instead, compute stats live from the "sessions" collection
+     * which IS written by admin_app, keyed by employee_id.
+     */
     private fun loadStats() {
         binding.progressDash.visibility = View.VISIBLE
-        val uid = session.getEmployeeUid()
-        if (uid.isEmpty()) {
+        val empId = session.getEmployeeId()
+        if (empId.isEmpty()) {
             binding.progressDash.visibility = View.GONE
             return
         }
         lifecycleScope.launch {
-            val stats = FirestoreRepository.getAttendanceStats(uid)
+            val monthKey = FirestoreRepository.currentMonthKey()
+            val history  = FirestoreRepository.getAttendanceHistory(
+                employeeId = empId,
+                monthKey   = monthKey
+            )
+
+            // Count unique dates where IN exists
+            val presentDates = history
+                .filter { (it["type"] as? String)?.uppercase() == "IN" }
+                .mapNotNull { it["date"] as? String }
+                .toSet()
+
+            val present  = presentDates.size
+            val otSessions = history.count { (it["type"] as? String)?.uppercase() == "OT_IN"
+                    || (it["action"] as? String)?.uppercase() == "OT_IN" }
+
+            // Today status
+            val todayStatus = FirestoreRepository.getTodayAttendanceStatus(empId)
+            val todayLabel = when (todayStatus) {
+                "IN"       -> "✅ Checked In"
+                "COMPLETE" -> "✅ Shift Complete"
+                "OT_IN"    -> "⏱ OT In Progress"
+                else       -> "❌ Not Marked"
+            }
+
             runOnUiThread {
                 binding.progressDash.visibility = View.GONE
-                val present  = (stats?.get("present")   as? Number)?.toInt()    ?: 0
-                val absent   = (stats?.get("absent")    as? Number)?.toInt()    ?: 0
-                val halfDays = (stats?.get("half_days") as? Number)?.toInt()    ?: 0
-                val otHours  = (stats?.get("ot_hours")  as? Number)?.toDouble() ?: 0.0
-
                 binding.tvPresent.text     = present.toString()
-                binding.tvAbsent.text      = absent.toString()
-                binding.tvHalfDays.text    = halfDays.toString()
-                binding.tvOtHours.text     = "%.1f hrs".format(otHours)
-                binding.tvTodayStatus.text = stats?.get("today_status") as? String ?: "Not Marked"
+                binding.tvAbsent.text      = "—"        // absent = admin-side calc only
+                binding.tvHalfDays.text    = "—"
+                binding.tvOtHours.text     = otSessions.toString()
+                binding.tvTodayStatus.text = todayLabel
             }
         }
     }
@@ -114,6 +139,21 @@ class DashboardActivity : AppCompatActivity() {
         }
         binding.btnHistory.setOnClickListener {
             startActivity(Intent(this, AttendanceHistoryActivity::class.java))
+        }
+        // FIX: ID Card button was wired up but never navigated anywhere
+        binding.btnIdCard.setOnClickListener {
+            val intent = Intent(this, IdCardActivity::class.java)
+            intent.putExtra("employee_id", session.getEmployeeUid())
+            startActivity(intent)
+        }
+        // FIX: Logout button was missing from setupButtons entirely
+        binding.btnLogout.setOnClickListener {
+            com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+            session.clearSession()
+            startActivity(Intent(this, LoginActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            })
+            finish()
         }
     }
 }

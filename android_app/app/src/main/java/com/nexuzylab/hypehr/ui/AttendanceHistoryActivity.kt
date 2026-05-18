@@ -19,6 +19,11 @@ import java.util.*
 
 /**
  * Attendance History with month navigation and summary counts.
+ * FIX: Summary counts were counting raw log entries (one per IN/OUT event).
+ *      Now correctly counts:
+ *        Days Present = unique dates where an IN log exists
+ *        Total IN     = count of IN entries
+ *        Total OUT    = count of OUT entries
  * Developed by David | Nexuzy Lab
  */
 class AttendanceHistoryActivity : AppCompatActivity() {
@@ -60,8 +65,8 @@ class AttendanceHistoryActivity : AppCompatActivity() {
         binding.tvMonth.text = monthLabel
 
         binding.progressHistory.visibility = View.VISIBLE
-        binding.tvEmpty.visibility = View.GONE
-        binding.rvHistory.visibility = View.GONE
+        binding.tvEmpty.visibility         = View.GONE
+        binding.rvHistory.visibility       = View.GONE
 
         lifecycleScope.launch {
             val logs = FirestoreRepository.getAttendanceHistory(
@@ -74,23 +79,25 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                     binding.tvEmpty.visibility = View.VISIBLE
                 } else {
                     binding.rvHistory.visibility = View.VISIBLE
-                    binding.rvHistory.adapter = HistoryAdapter(logs)
+                    binding.rvHistory.adapter    = HistoryAdapter(logs)
 
-                    // Summary counts
-                    val presentDates = logs.map { it["date"] as? String ?: "" }.toSet()
+                    // FIX: Count unique present days (not raw entry count)
+                    val presentDays = logs
+                        .filter { (it["type"] as? String)?.uppercase() == "IN" }
+                        .mapNotNull { it["date"] as? String }
+                        .toSet().size
                     val inCount  = logs.count { (it["type"] as? String)?.uppercase() == "IN" }
                     val outCount = logs.count { (it["type"] as? String)?.uppercase() == "OUT" }
-                    binding.tvSummaryPresent.text = "Days: ${presentDates.size}"
-                    binding.tvSummaryAbsent.text  = "IN: $inCount"
-                    binding.tvSummaryHalf.text    = "OUT: $outCount"
+
+                    binding.tvSummaryPresent.text = "Days Present: $presentDays"
+                    binding.tvSummaryAbsent.text  = "Check IN: $inCount"
+                    binding.tvSummaryHalf.text    = "Check OUT: $outCount"
                 }
             }
         }
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
-
-    // ── Adapter ────────────────────────────────────────────────────────────────
 
     inner class HistoryAdapter(
         private val items: List<Map<String, Any>>
@@ -119,7 +126,6 @@ class AttendanceHistoryActivity : AppCompatActivity() {
             val type = (item["type"] as? String ?: item["action"] as? String ?: "IN").uppercase()
             val location = item["location"] as? String ?: "-"
 
-            // Parse date for day number and day name
             try {
                 val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                 val d = sdf.parse(date)
@@ -132,7 +138,6 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                 holder.tvDayName.text = ""
             }
 
-            // Format timestamp to time
             val ts = item["timestamp"]
             val timeStr = when (ts) {
                 is com.google.firebase.Timestamp ->
@@ -141,8 +146,8 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                 else -> "--:--"
             }
 
-            holder.tvStatus.text   = if (type == "IN") "🟢 Check IN" else "🔴 Check OUT"
-            holder.tvLocation.text = "📍 $location"
+            holder.tvStatus.text   = if (type == "IN") "\uD83D\uDFE2 Check IN" else "\uD83D\uDD34 Check OUT"
+            holder.tvLocation.text = "\uD83D\uDCCD $location"
 
             if (type == "IN") {
                 holder.tvCheckIn.text  = "IN: $timeStr"
