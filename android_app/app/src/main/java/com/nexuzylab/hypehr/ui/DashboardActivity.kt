@@ -22,9 +22,8 @@ import java.util.TimeZone
 /**
  * DashboardActivity — Employee-facing home screen.
  *
- * FIX: loadCompanyName() now fetches settings/company → company_name field
- *      (matches Firebase structure) so employees see "Nexuzy lab" not
- *      "Hype Pvt Ltd" or any hardcoded placeholder.
+ * FIX: loadCompanyName() fetches settings/company → company_name field
+ *      and updates binding.tvCompany (id in activity_dashboard.xml).
  *
  * Developed by David | Nexuzy Lab
  */
@@ -54,7 +53,8 @@ class DashboardActivity : AppCompatActivity() {
     /**
      * Fetch real company name from Firestore.
      * Priority: company_name → name → title → "Your Company"
-     * Matches your Firebase: settings/company → company_name: "Nexuzy lab"
+     * Matches Firebase: settings/company → company_name: "Nexuzy lab"
+     * Updates binding.tvCompany (xml id: tvCompany in activity_dashboard.xml)
      */
     private fun loadCompanyName() {
         db.collection("settings").document("company").get()
@@ -63,9 +63,8 @@ class DashboardActivity : AppCompatActivity() {
                     ?: doc.getString("name")?.takeIf { it.isNotBlank() }
                     ?: doc.getString("title")?.takeIf { it.isNotBlank() }
                     ?: "Your Company"
-                // Show company name in header/toolbar subtitle if the view exists
-                try { binding.tvCompanyName.text = name } catch (_: Exception) {}
-                try { supportActionBar?.subtitle = name } catch (_: Exception) {}
+                binding.tvCompany.text = name
+                supportActionBar?.subtitle = name
             }
             .addOnFailureListener {
                 android.util.Log.w("DashboardActivity", "loadCompanyName failed: ${it.message}")
