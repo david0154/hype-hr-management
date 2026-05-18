@@ -1,74 +1,179 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    activity_security_login.xml
+    FIX: Full dark theme — background #0d1b2a (same as admin app)
+         All text, input fields, hints, and button now visible on dark background.
+    Developed by David | Nexuzy Lab
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/colorBackground">
+    android:background="#0d1b2a">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="@color/colorPrimaryDark"
-        app:titleTextColor="@color/white"
-        app:title="Security Login"/>
+        android:background="#1a2f47"
+        app:titleTextColor="#FFFFFF"
+        app:title="Security Login" />
 
-    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent"
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:fillViewport="true">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:orientation="vertical" android:gravity="center_horizontal"
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
             android:padding="32dp">
 
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="🔐 Security / Supervisor"
-                android:textSize="22sp" android:textStyle="bold"
-                android:textColor="@color/colorText" android:layout_marginTop="32dp"
-                android:layout_marginBottom="8dp"/>
+            <!-- Shield icon -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🔐"
+                android:textSize="52sp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="8dp" />
 
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="Roles: Security, Supervisor, HR, Manager, CA"
-                android:textSize="13sp" android:textColor="@color/colorTextMuted"
-                android:gravity="center" android:layout_marginBottom="32dp"/>
+            <!-- Title -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Security / Supervisor"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:layout_marginBottom="6dp" />
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/tilSecUsername"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:hint="Username" android:layout_marginBottom="16dp">
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etSecUsername"
-                    android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:inputType="text" android:imeOptions="actionNext"/>
-            </com.google.android.material.textfield.TextInputLayout>
+            <!-- Subtitle -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Roles: Security · Supervisor · HR · Manager · CA"
+                android:textSize="12sp"
+                android:textColor="#8899AA"
+                android:gravity="center"
+                android:layout_marginBottom="36dp" />
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/tilSecPassword"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:hint="Password" app:passwordToggleEnabled="true"
-                android:layout_marginBottom="24dp">
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etSecPassword"
-                    android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:inputType="textPassword" android:imeOptions="actionDone"/>
-            </com.google.android.material.textfield.TextInputLayout>
+            <!-- Card container for inputs -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="#1a2f47"
+                android:padding="20dp">
 
-            <ProgressBar android:id="@+id/progressSec"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:visibility="gone" android:layout_marginBottom="8dp"/>
+                <!-- Email / Username label -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Email"
+                    android:textSize="12sp"
+                    android:textColor="#8899AA"
+                    android:layout_marginBottom="4dp" />
 
+                <!-- Email field -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/tilSecUsername"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Enter your email"
+                    android:layout_marginBottom="20dp"
+                    app:boxStrokeColor="#3a6ea8"
+                    app:boxBackgroundColor="#0d2236"
+                    app:hintTextColor="#8899AA"
+                    app:startIconDrawable="@android:drawable/ic_dialog_email"
+                    app:startIconTint="#3a6ea8">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etSecUsername"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textEmailAddress"
+                        android:imeOptions="actionNext"
+                        android:textColor="#FFFFFF"
+                        android:textColorHint="#8899AA" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Password label -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Password"
+                    android:textSize="12sp"
+                    android:textColor="#8899AA"
+                    android:layout_marginBottom="4dp" />
+
+                <!-- Password field -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/tilSecPassword"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Enter your password"
+                    android:layout_marginBottom="8dp"
+                    app:boxStrokeColor="#3a6ea8"
+                    app:boxBackgroundColor="#0d2236"
+                    app:hintTextColor="#8899AA"
+                    app:passwordToggleEnabled="true"
+                    app:passwordToggleTint="#8899AA"
+                    app:startIconDrawable="@android:drawable/ic_lock_idle_lock"
+                    app:startIconTint="#3a6ea8">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etSecPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textPassword"
+                        android:imeOptions="actionDone"
+                        android:textColor="#FFFFFF"
+                        android:textColorHint="#8899AA" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+            </LinearLayout>
+
+            <!-- Progress bar -->
+            <ProgressBar
+                android:id="@+id/progressSec"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:visibility="gone"
+                android:indeterminateTint="#3a6ea8"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="8dp" />
+
+            <!-- Login button -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSecLogin"
-                android:layout_width="match_parent" android:layout_height="56dp"
-                android:text="Login" app:cornerRadius="12dp"
-                android:layout_marginBottom="16dp"/>
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:text="Login"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="16dp"
+                app:backgroundTint="#1e6f9f"
+                app:cornerRadius="12dp" />
 
-            <TextView android:id="@+id/tvBackToEmployee"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
+            <!-- Back link -->
+            <TextView
+                android:id="@+id/tvBackToEmployee"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:text="@string/back_to_employee"
-                android:textColor="@color/colorPrimary" android:textSize="13sp"
-                android:padding="8dp" android:clickable="true" android:focusable="true"/>
+                android:textColor="#4da6ff"
+                android:textSize="13sp"
+                android:padding="8dp"
+                android:clickable="true"
+                android:focusable="true" />
 
         </LinearLayout>
     </ScrollView>
