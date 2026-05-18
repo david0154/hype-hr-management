@@ -15,12 +15,11 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * DashboardActivity — Employee-facing home screen.
- * Always fetches employee doc from Firestore so photo_url loads
- * fresh every session (fixes "no image after app close" bug).
- *
+ * Date display uses IST (Asia/Kolkata) timezone.
  * Developed by David | Nexuzy Lab
  */
 class DashboardActivity : AppCompatActivity() {
@@ -35,28 +34,27 @@ class DashboardActivity : AppCompatActivity() {
         session = SessionManager(this)
         setSupportActionBar(binding.toolbar)
 
-        binding.tvDate.text = SimpleDateFormat("EEEE, dd MMM yyyy", Locale.getDefault()).format(Date())
+        // Display date in IST
+        val dateFmt = SimpleDateFormat("EEEE, dd MMM yyyy", Locale.ENGLISH)
+        dateFmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        binding.tvDate.text = dateFmt.format(Date())
+
         loadEmployeeProfile()
         loadStats()
         setupButtons()
     }
 
-    // ── Load employee name + photo from Firestore (fixes image-lost-on-restart) ──
-
     private fun loadEmployeeProfile() {
-        // Show from session first (instant)
         binding.tvEmpName.text     = session.getEmployeeName()
         binding.tvEmpId.text       = session.getEmployeeId()
         binding.tvDesignation.text = session.getDesignation()
 
-        // Then refresh from Firestore using Firebase Auth UID to get latest data
         val uid = session.getEmployeeUid()
         if (uid.isEmpty()) return
 
         lifecycleScope.launch {
             val empDoc = FirestoreRepository.getEmployeeByUid(uid)
 
-            // Accept multiple possible field names for photo
             val photoUrl = empDoc?.get("photo_url") as? String
                 ?: empDoc?.get("profile_photo") as? String
                 ?: empDoc?.get("image_url") as? String
@@ -66,14 +64,12 @@ class DashboardActivity : AppCompatActivity() {
                 if (photoUrl.isNotEmpty()) {
                     Glide.with(this@DashboardActivity)
                         .load(photoUrl)
-                        // DISK cache → image shows even when offline after first load
                         .diskCacheStrategy(DiskCacheStrategy.ALL)
                         .placeholder(R.drawable.ic_person_placeholder)
                         .error(R.drawable.ic_person_placeholder)
                         .circleCrop()
                         .into(binding.ivEmpPhoto)
                 }
-                // Update UI with fresh Firestore values
                 val name = empDoc?.get("name") as? String
                 val id   = empDoc?.get("employee_id") as? String
                 val desg = empDoc?.get("designation") as? String
@@ -84,12 +80,8 @@ class DashboardActivity : AppCompatActivity() {
         }
     }
 
-    // ── Attendance stats ──────────────────────────────────────────────────────
-
     private fun loadStats() {
         binding.progressDash.visibility = View.VISIBLE
-        // FIX: use UID (not employee_id code) — attendance_summary subcollection
-        // is stored under the Firebase Auth UID document in Firestore
         val uid = session.getEmployeeUid()
         if (uid.isEmpty()) {
             binding.progressDash.visibility = View.GONE
