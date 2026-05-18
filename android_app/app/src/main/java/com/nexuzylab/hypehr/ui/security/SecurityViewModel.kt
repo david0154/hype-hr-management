@@ -1,13 +1,8 @@
 /**
  * Hype HR Management — Security ViewModel
  *
- * FIX 1: loadTodayAllLogs — removed orderBy("timestamp") which requires a
- *         composite Firestore index (date ASC + timestamp DESC). Now fetches
- *         by date == today only, then sorts in memory. No index needed.
- *
- * FIX 2: Company name is loaded from Firestore `settings/company` → `name`
- *         field. If missing, falls back to reading `company_name` or `title`.
- *         The Security Dashboard and Scan screen both use this.
+ * FIX: loadCompanyName now tries `company_name` FIRST (matches Firestore
+ *      settings/company → company_name: "Nexuzy lab"), then `name`, then `title`.
  *
  * @author  David | Nexuzy Lab
  */
@@ -59,17 +54,12 @@ class SecurityViewModel : ViewModel() {
 
     /**
      * Load ALL attendance logs for today — sorted in memory (no composite index needed).
-     *
-     * FIX: Removed .orderBy("timestamp") which required a composite Firestore index
-     * (date ASC + timestamp DESC). Without that index the query throws FAILED_PRECONDITION
-     * and returns nothing. Sorting the small result set (<50 docs) in memory is fast enough.
      */
     fun loadTodayAllLogs(callback: (List<AttendanceLog>) -> Unit) {
         viewModelScope.launch {
             try {
-                val today = FirestoreRepository.todayDateKey()   // "yyyy-MM-dd" IST
+                val today = FirestoreRepository.todayDateKey()
 
-                // Only .whereEqualTo — no orderBy — so NO composite index required
                 val snap = db.collection("attendance_logs")
                     .whereEqualTo("date", today)
                     .limit(100)
@@ -82,9 +72,7 @@ class SecurityViewModel : ViewModel() {
                     val data = doc.data ?: return@mapNotNull null
                     val tsField = data["timestamp"]
                     val tsStr = when (tsField) {
-                        is Timestamp -> {
-                            sdfParse.format(tsField.toDate())
-                        }
+                        is Timestamp -> sdfParse.format(tsField.toDate())
                         is String    -> tsField
                         else         -> ""
                     }
@@ -98,9 +86,7 @@ class SecurityViewModel : ViewModel() {
                         scanned_by  = (data["scanned_by"] as? String) ?: ""
                     )
                 }
-                // Sort newest first in memory — no Firestore index required
-                val sorted = logs.sortedByDescending { it.timestamp }
-                callback(sorted)
+                callback(logs.sortedByDescending { it.timestamp })
             } catch (e: Exception) {
                 android.util.Log.e("SecurityVM", "loadTodayAllLogs failed: ${e.message}")
                 callback(emptyList())
@@ -109,18 +95,23 @@ class SecurityViewModel : ViewModel() {
     }
 
     /**
-     * Load the real company name from Firestore.
-     * Tries: settings/company → name, then company_name, then title.
-     * Falls back to "Your Company" if nothing found.
+     * Load company name from Firestore settings/company.
+     *
+     * Priority order matches your Firebase structure:
+     *   1. company_name  ← "Nexuzy lab"  (your actual field)
+     *   2. name
+     *   3. title
+     *   4. fallback: "Your Company"
      */
     fun loadCompanyName(callback: (String) -> Unit) {
         viewModelScope.launch {
             try {
                 val doc = db.collection("settings").document("company").get().await()
-                val name = doc.getString("name")?.takeIf { it.isNotBlank() }
-                    ?: doc.getString("company_name")?.takeIf { it.isNotBlank() }
+                val name = doc.getString("company_name")?.takeIf { it.isNotBlank() }
+                    ?: doc.getString("name")?.takeIf { it.isNotBlank() }
                     ?: doc.getString("title")?.takeIf { it.isNotBlank() }
                     ?: "Your Company"
+                android.util.Log.d("SecurityVM", "Company name loaded: $name")
                 callback(name)
             } catch (e: Exception) {
                 android.util.Log.w("SecurityVM", "loadCompanyName failed: ${e.message}")
