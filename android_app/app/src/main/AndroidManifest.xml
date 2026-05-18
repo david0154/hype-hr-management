@@ -34,19 +34,43 @@
         </activity>
 
         <!-- Employee flow -->
-        <activity android:name=".ui.LoginActivity" android:exported="false"/>
-        <activity android:name=".ui.PinSetupActivity" android:exported="false"/>
-        <activity android:name=".ui.PinLoginActivity" android:exported="false"/>
-        <activity android:name=".ui.DashboardActivity" android:exported="false"/>
-        <activity android:name=".ui.AttendanceActivity" android:exported="false"/>
-        <activity android:name=".ui.SalaryActivity" android:exported="false"/>
-        <activity android:name=".ui.AttendanceHistoryActivity" android:exported="false"/>
-        <activity android:name=".ui.SalarySlipViewerActivity" android:exported="false"/>
+        <activity android:name=".ui.LoginActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Login"/>
+        <activity android:name=".ui.PinSetupActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Pin"
+            android:windowSoftInputMode="adjustResize"/>
+        <activity android:name=".ui.PinLoginActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Pin"
+            android:windowSoftInputMode="adjustResize"/>
+        <activity android:name=".ui.DashboardActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
+        <activity android:name=".ui.AttendanceActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
+        <activity android:name=".ui.SalaryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
+        <activity android:name=".ui.AttendanceHistoryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
+        <activity android:name=".ui.SalarySlipViewerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
 
         <!-- Security / Supervisor flow -->
-        <activity android:name=".ui.SecurityLoginActivity" android:exported="false"/>
-        <activity android:name=".ui.SecurityDashboardActivity" android:exported="false"/>
-        <activity android:name=".ui.SecurityScanActivity" android:exported="false"/>
+        <activity android:name=".ui.SecurityLoginActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Login"/>
+        <activity android:name=".ui.SecurityDashboardActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
+        <activity android:name=".ui.SecurityScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.HypeHR.Dashboard"/>
 
         <!-- Boot receiver — schedules WorkManager on device boot -->
         <receiver
