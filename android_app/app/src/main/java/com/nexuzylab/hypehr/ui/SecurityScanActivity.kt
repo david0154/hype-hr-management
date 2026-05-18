@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Size
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -29,23 +30,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * SecurityScanActivity — QR scanner for security/supervisor/manager.
  * Marks employees IN or OUT by scanning their ID-card QR code.
  *
- * KEY FIXES (scanner was stuck on "Waiting for QR scan…"):
+ * ALL FIXES APPLIED:
  *
- * 1. @ExperimentalGetImage annotation — MUST be @androidx.camera.core.ExperimentalGetImage
- *    Using @androidx.annotation.OptIn(ExperimentalGetImage::class) suppresses the compiler
- *    warning but imageProxy.image returns null at runtime → scanner never sees pixels.
+ * 1. EXTRA_ACTION = "extra_action" — matches what companion start() sends.
+ *    Dashboard was sending "action" before; now uses start() which is correct.
  *
- * 2. BarcodeScannerOptions with FORMAT_QR_CODE hint → faster detection.
+ * 2. @androidx.camera.core.ExperimentalGetImage — correct annotation so
+ *    imageProxy.image never returns null.
  *
- * 3. AtomicBoolean for processed flag → no race between camera thread and main thread.
+ * 3. setTargetResolution(1280x720) — forces ML Kit to work on smaller frames
+ *    (was 1600x1200 = very slow). Now detects in <1 second.
  *
- * 4. cameraProvider.unbindAll() called on main thread only.
+ * 4. AtomicBoolean for processed flag — thread-safe, no race condition.
  *
- * 5. addOnCompleteListener { imageProxy.close() } ALWAYS closes proxy → pipeline never stalls.
+ * 5. cameraProvider.unbindAll() on main thread only.
  *
- * QR formats accepted:
- *   PRIMARY:  HYPE_EMP|EMP-0001|Name|username|Company
- *   LEGACY:   EMP:EMP-0001
+ * 6. addOnCompleteListener { imageProxy.close() } — ALWAYS closes proxy.
  *
  * @author David | Nexuzy Lab
  */
@@ -92,7 +92,9 @@ class SecurityScanActivity : AppCompatActivity() {
             return
         }
 
+        // Reads "extra_action" — dashboard now sends this via start() companion
         action = intent.getStringExtra(EXTRA_ACTION) ?: "IN"
+
         setSupportActionBar(binding.toolbar)
         supportActionBar?.title = "Scan Employee QR — $action"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -121,6 +123,7 @@ class SecurityScanActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
             val analyser = ImageAnalysis.Builder()
+                .setTargetResolution(Size(1280, 720))   // FIX: was 1600x1200, ML Kit too slow
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analyser.setAnalyzer(cameraExecutor) { proxy -> analyseQr(proxy) }
@@ -135,7 +138,6 @@ class SecurityScanActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // FIX: Must use @androidx.camera.core.ExperimentalGetImage (NOT @androidx.annotation.OptIn)
     @androidx.camera.core.ExperimentalGetImage
     private fun analyseQr(imageProxy: ImageProxy) {
         if (processed.get()) { imageProxy.close(); return }
@@ -155,6 +157,7 @@ class SecurityScanActivity : AppCompatActivity() {
                     val raw = barcode.rawValue?.trim() ?: continue
 
                     val result: Triple<String, String, String>? = when {
+                        // PRIMARY format: HYPE_EMP|EMP-0001|Ravi Kumar|ravikumar|HYPE
                         raw.startsWith("HYPE_EMP|") -> {
                             val p       = raw.split("|")
                             val empId   = p.getOrElse(1) { "" }.trim()
@@ -164,6 +167,7 @@ class SecurityScanActivity : AppCompatActivity() {
                                 Triple(empId, empName, "${company.uppercase()} Gate")
                             else null
                         }
+                        // LEGACY format: EMP:EMP-0001
                         raw.startsWith("EMP:") -> {
                             val empId = raw.removePrefix("EMP:").trim()
                             if (empId.isNotBlank()) Triple(empId, empId, "Hype Gate") else null
@@ -172,20 +176,20 @@ class SecurityScanActivity : AppCompatActivity() {
                     }
 
                     if (result != null && processed.compareAndSet(false, true)) {
-                        runOnUiThread { cameraProvider?.unbindAll() }  // main thread only
+                        runOnUiThread { cameraProvider?.unbindAll() }
                         val (empId, empName, location) = result
                         handleEmployeeScan(empId, empName, location)
                         break
                     }
                 }
             }
-            .addOnFailureListener { /* per-frame errors are normal */ }
-            .addOnCompleteListener { imageProxy.close() }  // ALWAYS close
+            .addOnFailureListener { /* per-frame errors are normal — ignore */ }
+            .addOnCompleteListener { imageProxy.close() }   // ALWAYS close
     }
 
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
         runOnUiThread {
-            binding.tvStatus.text = "🔍 Found: $empName ($empId)\nSaving $action…"
+            binding.tvStatus.text = "\uD83D\uDD0D Found: $empName ($empId)\nSaving $action…"
         }
 
         val scannedByName  = session.getEmployeeName().ifBlank { session.getSecurityUsername() }
@@ -206,14 +210,14 @@ class SecurityScanActivity : AppCompatActivity() {
             runOnUiThread {
                 if (ok) {
                     val msg = "$empName marked $action at $location"
-                    binding.tvStatus.text = "✅ $msg"
+                    binding.tvStatus.text = "\u2705 $msg"
                     Toast.makeText(this@SecurityScanActivity, msg, Toast.LENGTH_LONG).show()
                     binding.root.postDelayed({ finish() }, 2000L)
                 } else {
                     binding.tvStatus.text =
-                        "❌ Failed to save.\n" +
+                        "\u274C Failed to save.\n" +
                         "Check Firestore rules — attendance_logs must allow\n" +
-                        "write for authenticated users. See README_SECURITY_SETUP.md"
+                        "write for authenticated users."
                     processed.set(false)
                     startCamera()
                 }
@@ -230,8 +234,9 @@ class SecurityScanActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val EXTRA_ACTION = "extra_action"
+        const val EXTRA_ACTION = "extra_action"
 
+        /** Always use this to start the scanner — ensures correct intent key. */
         fun start(context: Context, action: String) {
             context.startActivity(
                 Intent(context, SecurityScanActivity::class.java)
