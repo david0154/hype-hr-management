@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.graphics.Rect
@@ -21,6 +20,7 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.firebase.firestore.FirebaseFirestore
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -45,23 +45,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * SecurityScanActivity — QR scanner (ML Kit PRIMARY + ZXing FALLBACK)
  *
- * ROOT-CAUSE FIXES from logcat:
- * 1. Camera resolution: was 1600x1200. CameraX on portrait devices needs
- *    Size(720,1280) not Size(1280,720) — width<height in portrait.
- *    Added ALSO setTargetAspectRatio(AspectRatio.RATIO_16_9) as belt+suspenders.
- *
- * 2. Auth guard rewritten: security login mode OR any logged-in user
- *    with a valid role. The old guard was triggering PERMISSION_DENIED
- *    on security_users Firestore query and finishing the activity.
- *
- * 3. @OptIn(ExperimentalGetImage::class) on CLASS level — required on
- *    Android API 34 (akita/Pixel 9) otherwise imageProxy.image returns null.
- *
- * 4. ZXing fallback: if ML Kit finds 0 barcodes, the frame bytes are
- *    decoded by ZXing MultiFormatReader on a coroutine — guarantees detection
- *    even when ML Kit's TFLite model is slow to warm up.
- *
- * 5. Proper QR overlay scan box added (see activity_security_scan.xml).
+ * FIX: "Hype Gate" was hardcoded in 3 places inside parseAndHandle().
+ *      Now the gate name = "<CompanyName> Gate" where CompanyName is
+ *      loaded from Firestore settings/company at activity start.
+ *      e.g. if your company is "Nexuzy Technologies" →  "Nexuzy Technologies Gate"
  *
  * @author David | Nexuzy Lab
  */
@@ -71,6 +58,10 @@ class SecurityScanActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySecurityScanBinding
     private lateinit var session: SessionManager
     private lateinit var cameraExecutor: ExecutorService
+
+    // Company name loaded from Firestore — used as gate label
+    // Default is "Company Gate" until Firestore responds
+    private var companyGateName: String = "Company Gate"
 
     private val mlkitScanner by lazy {
         BarcodeScanning.getClient(
@@ -102,8 +93,6 @@ class SecurityScanActivity : AppCompatActivity() {
         setContentView(binding.root)
         session = SessionManager(this)
 
-        // ── Auth guard (FIXED) ──────────────────────────────────────────────
-        // Allow: security-mode session OR any logged-in employee with allowed role
         val role = (session.getRole().ifBlank { session.getSecurityRole() }).lowercase().trim()
         val allowed = setOf("security", "supervisor", "manager", "hr", "admin", "super_admin", "ca")
         val isAuthorized = session.isSecurityMode() ||
@@ -133,6 +122,35 @@ class SecurityScanActivity : AppCompatActivity() {
             if (action == "IN") 0xFF388E3C.toInt() else 0xFFD32F2F.toInt()
         )
 
+        // ── Load company name from Firestore, then start camera ────────────
+        // Camera starts AFTER company name is resolved so every scan
+        // immediately has the real gate name.
+        loadCompanyNameThenStartCamera()
+    }
+
+    /**
+     * Loads the company name from Firestore settings/company → name.
+     * Sets [companyGateName] = "<CompanyName> Gate" then starts the camera.
+     * If Firestore fails, falls back to "Company Gate" (neutral, not "Hype Gate").
+     */
+    private fun loadCompanyNameThenStartCamera() {
+        FirebaseFirestore.getInstance()
+            .collection("settings").document("company").get()
+            .addOnSuccessListener { doc ->
+                val name = doc.getString("name")?.takeIf { it.isNotBlank() }
+                    ?: "Company"
+                companyGateName = "$name Gate"
+                Log.d(TAG, "Gate name resolved: $companyGateName")
+                requestCameraOrStart()
+            }
+            .addOnFailureListener { e ->
+                Log.w(TAG, "Company load failed, using default gate name: ${e.message}")
+                companyGateName = "Company Gate"
+                requestCameraOrStart()
+            }
+    }
+
+    private fun requestCameraOrStart() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
         ) startCamera()
@@ -151,8 +169,6 @@ class SecurityScanActivity : AppCompatActivity() {
                 .build()
                 .also { it.setSurfaceProvider(binding.previewView.surfaceProvider) }
 
-            // FIX 1: portrait device needs height > width for setTargetResolution
-            // 720x1280 in portrait = camera picks ~720p not 1600x1200
             val analyser = ImageAnalysis.Builder()
                 .setTargetResolution(Size(720, 1280))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -173,17 +189,15 @@ class SecurityScanActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // FIX 3: @OptIn on class handles this — no per-method annotation needed
     private fun analyseFrame(imageProxy: ImageProxy) {
         if (processed.get()) { imageProxy.close(); return }
 
         val mediaImage = imageProxy.image
         if (mediaImage == null) { imageProxy.close(); return }
 
-        val rotation = imageProxy.imageInfo.rotationDegrees
+        val rotation   = imageProxy.imageInfo.rotationDegrees
         val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
 
-        // PRIMARY: ML Kit
         mlkitScanner.process(inputImage)
             .addOnSuccessListener { barcodes ->
                 if (processed.get()) return@addOnSuccessListener
@@ -191,10 +205,9 @@ class SecurityScanActivity : AppCompatActivity() {
                 if (raw != null) {
                     parseAndHandle(raw)
                 } else {
-                    // FALLBACK: ZXing on a coroutine — convert YUV→Bitmap→ZXing
-                    val bytes   = imageProxy.toNv21ByteArray()
-                    val width   = imageProxy.width
-                    val height  = imageProxy.height
+                    val bytes  = imageProxy.toNv21ByteArray()
+                    val width  = imageProxy.width
+                    val height = imageProxy.height
                     lifecycleScope.launch(Dispatchers.Default) {
                         val result = decodeWithZxing(bytes, width, height)
                         if (result != null) withContext(Dispatchers.Main) { parseAndHandle(result) }
@@ -205,7 +218,6 @@ class SecurityScanActivity : AppCompatActivity() {
             .addOnCompleteListener { imageProxy.close() }
     }
 
-    /** ZXing decode on background thread */
     private fun decodeWithZxing(nv21: ByteArray, width: Int, height: Int): String? {
         return try {
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
@@ -218,8 +230,8 @@ class SecurityScanActivity : AppCompatActivity() {
             bitmap.getPixels(intArray, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
             bitmap.recycle()
 
-            val source = RGBLuminanceSource(bitmap.width, bitmap.height, intArray)
-            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            val source        = RGBLuminanceSource(bitmap.width, bitmap.height, intArray)
+            val binaryBitmap  = BinaryBitmap(HybridBinarizer(source))
             zxingReader.decode(binaryBitmap).text
         } catch (e: NotFoundException) {
             null
@@ -233,25 +245,27 @@ class SecurityScanActivity : AppCompatActivity() {
         if (!processed.compareAndSet(false, true)) return
         Log.d(TAG, "QR decoded: $raw")
 
+        // companyGateName is already set from Firestore e.g. "Nexuzy Technologies Gate"
+        // No more hardcoded "Hype Gate" anywhere below!
         val result: Triple<String, String, String>? = when {
             raw.startsWith("HYPE_EMP|") -> {
                 val p       = raw.split("|")
                 val empId   = p.getOrElse(1) { "" }.trim()
                 val empName = p.getOrElse(2) { empId }.trim().ifBlank { empId }
-                val company = p.getOrElse(4) { "HYPE" }.trim()
-                if (empId.isNotBlank()) Triple(empId, empName, "${company.uppercase()} Gate") else null
+                // field[4] in QR is the company slug from the ID card,
+                // but we ALWAYS use the live Firestore company name for the gate label
+                if (empId.isNotBlank()) Triple(empId, empName, companyGateName) else null
             }
             raw.startsWith("EMP:") -> {
                 val empId = raw.removePrefix("EMP:").trim()
-                if (empId.isNotBlank()) Triple(empId, empId, "Hype Gate") else null
+                // Old-format QR — still use live gate name
+                if (empId.isNotBlank()) Triple(empId, empId, companyGateName) else null
             }
-            // Accept raw employee IDs like EMP-0001 too
-            raw.matches(Regex("[A-Z]+-\\d+")) -> Triple(raw, raw, "Hype Gate")
+            raw.matches(Regex("[A-Z]+-\\d+")) -> Triple(raw, raw, companyGateName)
             else -> null
         }
 
         if (result == null) {
-            // Unknown QR — reset and keep scanning
             runOnUiThread { binding.tvStatus.text = "❓ Unknown QR. Try employee ID card." }
             processed.set(false)
             return
@@ -320,23 +334,17 @@ class SecurityScanActivity : AppCompatActivity() {
     }
 }
 
-// ── Extension: convert YUV_420_888 ImageProxy to NV21 byte array for ZXing ──
+// ── Extension: YUV_420_888 ImageProxy → NV21 bytes for ZXing ─────────────────
 private fun ImageProxy.toNv21ByteArray(): ByteArray {
-    val yPlane = planes[0]
-    val uPlane = planes[1]
-    val vPlane = planes[2]
-
-    val yBuffer: ByteBuffer = yPlane.buffer
-    val uBuffer: ByteBuffer = uPlane.buffer
-    val vBuffer: ByteBuffer = vPlane.buffer
-
+    val yBuffer: ByteBuffer = planes[0].buffer
+    val uBuffer: ByteBuffer = planes[1].buffer
+    val vBuffer: ByteBuffer = planes[2].buffer
     val ySize = yBuffer.remaining()
     val uSize = uBuffer.remaining()
     val vSize = vBuffer.remaining()
-
-    val nv21 = ByteArray(ySize + uSize + vSize)
-    yBuffer.get(nv21, 0, ySize)
-    vBuffer.get(nv21, ySize, vSize)
+    val nv21  = ByteArray(ySize + uSize + vSize)
+    yBuffer.get(nv21, 0,         ySize)
+    vBuffer.get(nv21, ySize,     vSize)
     uBuffer.get(nv21, ySize + vSize, uSize)
     return nv21
 }
