@@ -6,13 +6,11 @@
     android:layout_height="match_parent"
     android:background="#0d1b2a">
 
-    <!-- AppBar -->
     <com.google.android.material.appbar.AppBarLayout
         android:id="@+id/appBarLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:theme="@style/ThemeOverlay.MaterialComponents.Dark.ActionBar">
-
         <androidx.appcompat.widget.Toolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
@@ -21,7 +19,6 @@
             app:title="Security Dashboard" />
     </com.google.android.material.appbar.AppBarLayout>
 
-    <!-- Main scrollable content -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -34,7 +31,7 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- ===== Profile / Header Card ===== -->
+            <!-- ===== Profile Card ===== -->
             <androidx.cardview.widget.CardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -42,113 +39,155 @@
                 app:cardCornerRadius="14dp"
                 app:cardElevation="6dp"
                 android:layout_marginBottom="16dp">
-
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
                     android:padding="20dp">
-
-                    <!-- Name -->
-                    <TextView
-                        android:id="@+id/tvSecurityName"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Security Guard"
-                        android:textColor="#FFFFFF"
-                        android:textSize="22sp"
-                        android:textStyle="bold" />
-
-                    <!-- Role badge -->
-                    <TextView
-                        android:id="@+id/tvSecurityRole"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🛡️ Security Guard"
-                        android:textColor="#f0c040"
-                        android:textSize="14sp"
-                        android:layout_marginTop="3dp" />
-
-                    <!-- Company name -->
-                    <TextView
-                        android:id="@+id/tvCompanyName"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Hype Pvt Ltd"
-                        android:textColor="#aaaaaa"
-                        android:textSize="13sp"
-                        android:layout_marginTop="3dp" />
-
-                    <!-- Today's date -->
-                    <TextView
-                        android:id="@+id/tvTodayDate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Monday, 1 Jan 2026"
-                        android:textColor="#888888"
-                        android:textSize="12sp"
-                        android:layout_marginTop="4dp" />
-
-                    <!-- Today scan count -->
-                    <TextView
-                        android:id="@+id/tvTodayScans"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Today's scans: —"
-                        android:textColor="#27ae60"
-                        android:textSize="13sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="8dp" />
-
-                    <!-- Instruction -->
-                    <TextView
-                        android:id="@+id/tvInstructions"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Scan employee ID card QR to mark attendance"
-                        android:textColor="#666666"
-                        android:textSize="12sp"
-                        android:layout_marginTop="4dp" />
-
+                    <TextView android:id="@+id/tvSecurityName" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Security Guard" android:textColor="#FFFFFF" android:textSize="22sp" android:textStyle="bold" />
+                    <TextView android:id="@+id/tvSecurityRole" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="🛡️ Security Guard" android:textColor="#f0c040" android:textSize="14sp" android:layout_marginTop="3dp" />
+                    <TextView android:id="@+id/tvCompanyName" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Hype Pvt Ltd" android:textColor="#aaaaaa" android:textSize="13sp" android:layout_marginTop="3dp" />
+                    <TextView android:id="@+id/tvTodayDate" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Monday, 1 Jan 2026" android:textColor="#888888" android:textSize="12sp" android:layout_marginTop="4dp" />
+                    <TextView android:id="@+id/tvTodayScans" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Today’s scans: —" android:textColor="#27ae60" android:textSize="13sp" android:textStyle="bold" android:layout_marginTop="8dp" />
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
-            <!-- ===== Mark IN / Mark OUT Buttons ===== -->
-            <LinearLayout
+            <!-- ===== MY OWN ATTENDANCE CARD ===== -->
+            <androidx.cardview.widget.CardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginBottom="16dp"
-                android:weightSum="2">
+                app:cardBackgroundColor="#1f3050"
+                app:cardCornerRadius="14dp"
+                app:cardElevation="6dp"
+                android:layout_marginBottom="16dp">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnMarkIn"
-                    android:layout_width="0dp"
-                    android:layout_height="76dp"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="6dp"
-                    android:text="▶  Mark IN"
-                    android:textSize="17sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="#1e8449"
-                    app:cornerRadius="14dp"
-                    app:icon="@android:drawable/ic_menu_camera"
-                    app:iconGravity="start" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="📌 My Attendance"
+                        android:textColor="#f0c040"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnMarkOut"
-                    android:layout_width="0dp"
-                    android:layout_height="76dp"
-                    android:layout_weight="1"
-                    android:layout_marginStart="6dp"
-                    android:text="■  Mark OUT"
-                    android:textSize="17sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="#922b21"
-                    app:cornerRadius="14dp" />
-            </LinearLayout>
+                    <TextView
+                        android:id="@+id/tvSelfStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="⚠️ You haven’t checked IN today"
+                        android:textColor="#ff8c42"
+                        android:textSize="13sp"
+                        android:layout_marginBottom="12dp" />
 
-            <!-- ===== Recent Scans Section ===== -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:weightSum="2">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnSelfIn"
+                            android:layout_width="0dp"
+                            android:layout_height="56dp"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="6dp"
+                            android:text="▶ My IN"
+                            android:textStyle="bold"
+                            app:backgroundTint="#1e8449"
+                            app:cornerRadius="12dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnSelfOut"
+                            android:layout_width="0dp"
+                            android:layout_height="56dp"
+                            android:layout_weight="1"
+                            android:layout_marginStart="6dp"
+                            android:text="■ My OUT"
+                            android:textStyle="bold"
+                            app:backgroundTint="#922b21"
+                            app:cornerRadius="12dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- ===== SCAN OTHERS CARD (locks until self check-in) ===== -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/cardScanOthers"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                app:cardBackgroundColor="#1a2740"
+                app:cardCornerRadius="14dp"
+                app:cardElevation="6dp"
+                android:layout_marginBottom="16dp">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="📷 Scan Employee QR"
+                        android:textColor="#f0c040"
+                        android:textSize="15sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="4dp" />
+
+                    <TextView
+                        android:id="@+id/tvScanLockHint"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🔒 Mark YOUR check-in first to unlock scanning"
+                        android:textColor="#ff8c42"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="12dp"
+                        android:visibility="visible" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:weightSum="2">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnMarkIn"
+                            android:layout_width="0dp"
+                            android:layout_height="76dp"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="6dp"
+                            android:text="▶ Mark IN"
+                            android:textSize="17sp"
+                            android:textStyle="bold"
+                            app:backgroundTint="#1e8449"
+                            app:cornerRadius="14dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnMarkOut"
+                            android:layout_width="0dp"
+                            android:layout_height="76dp"
+                            android:layout_weight="1"
+                            android:layout_marginStart="6dp"
+                            android:text="■ Mark OUT"
+                            android:textSize="17sp"
+                            android:textStyle="bold"
+                            app:backgroundTint="#922b21"
+                            app:cornerRadius="14dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- ===== Recent Scans ===== -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -168,7 +207,7 @@
                 android:id="@+id/tvNoLogs"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="No scans yet today."
+                android:text="No scans today."
                 android:textColor="#555555"
                 android:textSize="13sp"
                 android:visibility="gone" />
@@ -177,19 +216,19 @@
                 android:id="@+id/rvRecentLogs"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:nestedScrollingEnabled="false"
                 android:visibility="gone" />
 
-            <!-- ===== Logout Button ===== -->
+            <!-- Logout at the bottom -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLogout"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="22dp"
-                android:text="🔓  Logout"
-                app:backgroundTint="#444444"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Logout"
+                app:backgroundTint="#333333"
                 app:cornerRadius="10dp" />
 
         </LinearLayout>
     </ScrollView>
+
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
