@@ -1,84 +1,117 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  activity_security_scan.xml
-  ViewBinding IDs must match SecurityScanActivity binding references exactly:
-    binding.toolbar, binding.tvInstruction, binding.tvScannedBy,
-    binding.tvStatus, binding.previewView
--->
-<androidx.constraintlayout.widget.ConstraintLayout
+<androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Toolbar — binding.toolbar -->
-    <androidx.appcompat.widget.Toolbar
-        android:id="@+id/toolbar"
-        android:layout_width="0dp"
-        android:layout_height="?attr/actionBarSize"
-        android:background="#1a2740"
-        app:titleTextColor="#FFFFFF"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+    <!-- Toolbar -->
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/appBarLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:theme="@style/ThemeOverlay.MaterialComponents.Dark.ActionBar">
 
-    <!-- Camera preview — binding.previewView -->
+        <androidx.appcompat.widget.Toolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="#1A1A1A"
+            app:titleTextColor="#FFFFFF" />
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <!-- Full-screen camera preview -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior"
+        app:scaleType="fillCenter" />
+
+    <!-- Dark overlay above the scan box -->
+    <View
+        android:layout_width="match_parent"
         android:layout_height="0dp"
-        app:layout_constraintTop_toBottomOf="@id/toolbar"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        android:layout_gravity="top"
+        android:layout_marginTop="?attr/actionBarSize"
+        android:background="#99000000"
+        android:id="@+id/overlayTop"
+        android:layout_weight="1" />
 
-    <!-- Bottom overlay panel -->
+    <!-- QR scan frame overlay -->
+    <FrameLayout
+        android:id="@+id/scanFrame"
+        android:layout_width="260dp"
+        android:layout_height="260dp"
+        android:layout_gravity="center"
+        android:background="@drawable/qr_scan_frame"
+        android:elevation="4dp" />
+
+    <!-- Bottom info panel -->
     <LinearLayout
-        android:id="@+id/bottomPanel"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
+        android:layout_gravity="bottom"
         android:background="#DD000000"
-        android:padding="20dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:elevation="4dp">
 
-        <!-- binding.tvInstruction -->
+        <!-- Action badge -->
+        <TextView
+            android:id="@+id/tvAction"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:paddingHorizontal="20dp"
+            android:paddingVertical="6dp"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:text="▶ Marking IN"
+            android:background="#FF388E3C" />
+
         <TextView
             android:id="@+id/tvInstruction"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
             android:gravity="center"
-            android:text="Point camera at Employee ID Card QR"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="6dp" />
+            android:text="Align Employee QR code inside the frame"
+            android:textColor="#CCFFFFFF"
+            android:textSize="14sp" />
 
-        <!-- binding.tvScannedBy -->
-        <TextView
-            android:id="@+id/tvScannedBy"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:text="Scanned by: Guard"
-            android:textColor="#aaaaaa"
-            android:textSize="12sp"
-            android:layout_marginBottom="8dp" />
-
-        <!-- binding.tvStatus -->
         <TextView
             android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:layout_marginTop="8dp"
+            android:text="Waiting for QR scan…"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <ProgressBar
+            android:id="@+id/progressScan"
+            style="?android:attr/progressBarStyleSmall"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:text="Waiting for QR scan…"
-            android:textColor="#f0c040"
-            android:textSize="13sp" />
+            android:layout_marginTop="8dp"
+            android:indeterminateTint="#FFFFFF"
+            android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/tvScannedBy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:layout_marginTop="8dp"
+            android:text="Scanned by: Guard (security)"
+            android:textColor="#99FFFFFF"
+            android:textSize="12sp" />
     </LinearLayout>
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

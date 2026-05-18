@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- QR scan corner frame — transparent centre with white corner brackets -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Top-left corner -->
+    <item android:top="0dp" android:left="0dp" android:bottom="0dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="0dp" android:color="@android:color/transparent" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+
+    <!-- Top edge -->
+    <item android:top="0dp" android:left="0dp" android:bottom="224dp" android:right="224dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="36dp" android:height="4dp" />
+        </shape>
+    </item>
+    <item android:top="0dp" android:left="0dp" android:bottom="224dp" android:right="220dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="4dp" android:height="36dp" />
+        </shape>
+    </item>
+
+    <!-- Top-right corner -->
+    <item android:top="0dp" android:left="224dp" android:bottom="224dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="36dp" android:height="4dp" />
+        </shape>
+    </item>
+    <item android:top="0dp" android:left="220dp" android:bottom="224dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="4dp" android:height="36dp" />
+        </shape>
+    </item>
+
+    <!-- Bottom-left corner -->
+    <item android:top="224dp" android:left="0dp" android:bottom="0dp" android:right="224dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="36dp" android:height="4dp" />
+        </shape>
+    </item>
+    <item android:top="220dp" android:left="0dp" android:bottom="0dp" android:right="224dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="4dp" android:height="36dp" />
+        </shape>
+    </item>
+
+    <!-- Bottom-right corner -->
+    <item android:top="224dp" android:left="224dp" android:bottom="0dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="36dp" android:height="4dp" />
+        </shape>
+    </item>
+    <item android:top="220dp" android:left="220dp" android:bottom="0dp" android:right="0dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="4dp" android:height="36dp" />
+        </shape>
+    </item>
+
+</layer-list>
