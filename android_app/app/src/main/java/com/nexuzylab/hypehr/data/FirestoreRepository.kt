@@ -16,16 +16,10 @@ import java.util.*
 object FirestoreRepository {
 
     private val db  = FirebaseFirestore.getInstance()
-    private val IST = TimeZone.getTimeZone("Asia/Kolkata")
+    private val IST = TimeZone.getTimeZone("Asia/Kolkata")  // single declaration
 
     // ── Employee ───────────────────────────────────────────────────────
 
-    /**
-     * Fetches employee doc by Firebase Auth UID.
-     * Strategy 1: direct document lookup employees/{uid}  (UID-keyed collections)
-     * Strategy 2: query where uid field == uid            (empId-keyed collections)
-     * Handles both Firestore setups.
-     */
     suspend fun getEmployeeByUid(uid: String): Map<String, Any>? {
         if (uid.isEmpty()) return null
         return try {
@@ -41,17 +35,10 @@ object FirestoreRepository {
 
     // ── Attendance Status ─────────────────────────────────────────────
 
-    /**
-     * Returns today's attendance state for an employee (IST date):
-     *   "NONE"     - not checked in yet today
-     *   "IN"       - checked in, not yet checked out
-     *   "COMPLETE" - regular IN + OUT both done
-     *   "OT_IN"    - overtime session in progress
-     */
     suspend fun getTodayAttendanceStatus(employeeId: String): String {
         if (employeeId.isEmpty()) return "NONE"
         return try {
-            val today = todayDateKey()   // IST date
+            val today = todayDateKey()
             val snap = db.collection("attendance_logs")
                 .whereEqualTo("employee_id", employeeId)
                 .whereEqualTo("date", today)
@@ -90,7 +77,7 @@ object FirestoreRepository {
             val snap = db.collection("employees")
                 .document(uid)
                 .collection("attendance_summary")
-                .document(currentMonthKey())   // IST month
+                .document(currentMonthKey())
                 .get().await()
             if (snap.exists()) snap.data else emptyMap()
         } catch (e: Exception) { null }
@@ -112,10 +99,6 @@ object FirestoreRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    /**
-     * Logs attendance. Date stored as IST date string "yyyy-MM-dd".
-     * Summary written under employees/{uid}/attendance_summary/{IST-month}.
-     */
     suspend fun logAttendance(
         empId: String = "",
         uid: String = "",
@@ -133,7 +116,7 @@ object FirestoreRepository {
         if (resolvedEmpId.isEmpty()) return false
 
         return try {
-            val today = todayDateKey()   // IST date
+            val today = todayDateKey()
             val logData = mapOf(
                 "employee_id" to resolvedEmpId,
                 "uid"         to resolvedUid,
@@ -150,7 +133,7 @@ object FirestoreRepository {
             val summaryRef = db.collection("employees")
                 .document(resolvedUid)
                 .collection("attendance_summary")
-                .document(currentMonthKey())   // IST month
+                .document(currentMonthKey())
 
             db.runTransaction { tx ->
                 val snap = tx.get(summaryRef)
@@ -242,8 +225,6 @@ object FirestoreRepository {
     }
 
     // ── IST Helpers ────────────────────────────────────────────────────────────
-
-    private val IST = TimeZone.getTimeZone("Asia/Kolkata")
 
     /** Returns today's date as "yyyy-MM-dd" in IST */
     fun todayDateKey(): String {
