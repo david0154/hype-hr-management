@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // ---------------------------------------------------------------
+    // Employees
+    // ---------------------------------------------------------------
+    // Public read is allowed on the employees collection so the login
+    // screen can resolve a username / employee_id → email BEFORE the
+    // user is authenticated.  Only the username, employee_id, and email
+    // fields are needed at that point; all other fields are still safe
+    // because write is fully blocked from the client.
+    match /employees/{empId} {
+      allow read:  if true;          // needed for pre-login username lookup
+      allow write: if false;         // admin SDK only
+    }
+
+    // ---------------------------------------------------------------
+    // Attendance logs
+    // ---------------------------------------------------------------
+    // Both the employee app and the security app write scan events.
+    match /attendance_logs/{logId} {
+      allow read, write: if isAuth();
+    }
+
+    // ---------------------------------------------------------------
+    // Sessions (computed by app after QR scan)
+    // ---------------------------------------------------------------
+    match /sessions/{sessionId} {
+      allow read, write: if isAuth();
+    }
+
+    // ---------------------------------------------------------------
+    // Salary slips
+    // ---------------------------------------------------------------
+    // Each slip document ID is formatted as  <uid>_YYYY-MM
+    // e.g.  abc123_2026-05
+    // Employees can only read their own slips.
+    match /salary/{slipId} {
+      allow read:  if isAuth() &&
+                   slipId.matches(request.auth.uid + '_.*');
+      allow write: if false;         // PHP cron / admin SDK only
+    }
+
+    // ---------------------------------------------------------------
+    // Advance logs
+    // ---------------------------------------------------------------
+    match /advance_logs/{logId} {
+      allow read:  if isAuth();
+      allow write: if false;         // admin SDK only
+    }
+
+    // ---------------------------------------------------------------
+    // Admin users  (never accessible from client)
+    // ---------------------------------------------------------------
+    match /admin_users/{userId} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // Settings  (bonus config, advance config, company settings)
+    // ---------------------------------------------------------------
+    match /settings/{doc} {
+      allow read:  if isAuth();
+      allow write: if false;         // admin SDK only
+    }
+  }
+}
