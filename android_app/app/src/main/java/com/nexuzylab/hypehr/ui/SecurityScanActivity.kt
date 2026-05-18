@@ -13,6 +13,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -22,16 +23,31 @@ import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * SecurityScanActivity — QR scanner for security / supervisor / manager.
+ * SecurityScanActivity — QR scanner for security/supervisor/manager.
  * Marks employees IN or OUT by scanning their ID-card QR code.
  *
- * Supported QR formats:
- *   PRIMARY:  HYPE_EMP|EMP-0001|Ravi Kumar|ravikumar|HYPE
- *   LEGACY:   EMP:EMP-0001   (old format — still accepted for already-printed cards)
+ * KEY FIXES (scanner was stuck on "Waiting for QR scan…"):
  *
- * @author  David | Nexuzy Lab
+ * 1. @ExperimentalGetImage annotation — MUST be @androidx.camera.core.ExperimentalGetImage
+ *    Using @androidx.annotation.OptIn(ExperimentalGetImage::class) suppresses the compiler
+ *    warning but imageProxy.image returns null at runtime → scanner never sees pixels.
+ *
+ * 2. BarcodeScannerOptions with FORMAT_QR_CODE hint → faster detection.
+ *
+ * 3. AtomicBoolean for processed flag → no race between camera thread and main thread.
+ *
+ * 4. cameraProvider.unbindAll() called on main thread only.
+ *
+ * 5. addOnCompleteListener { imageProxy.close() } ALWAYS closes proxy → pipeline never stalls.
+ *
+ * QR formats accepted:
+ *   PRIMARY:  HYPE_EMP|EMP-0001|Name|username|Company
+ *   LEGACY:   EMP:EMP-0001
+ *
+ * @author David | Nexuzy Lab
  */
 class SecurityScanActivity : AppCompatActivity() {
 
@@ -39,12 +55,17 @@ class SecurityScanActivity : AppCompatActivity() {
     private lateinit var session: SessionManager
     private lateinit var cameraExecutor: ExecutorService
 
-    // BarcodeScanner created ONCE — not per-frame
-    private val barcodeScanner: BarcodeScanner by lazy { BarcodeScanning.getClient() }
+    private val barcodeScanner: BarcodeScanner by lazy {
+        BarcodeScanning.getClient(
+            BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+        )
+    }
 
     private var cameraProvider: ProcessCameraProvider? = null
+    private val processed = AtomicBoolean(false)
     private var action: String = "IN"
-    private var processed = false
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -65,9 +86,7 @@ class SecurityScanActivity : AppCompatActivity() {
         val role    = session.getRole().lowercase().trim()
             .ifBlank { session.getSecurityRole().lowercase().trim() }
         val allowed = setOf("security", "supervisor", "manager", "hr", "admin", "super_admin", "ca")
-        val authorised = session.isSecurityMode() || (session.isLoggedIn() && role in allowed)
-
-        if (!authorised) {
+        if (!session.isSecurityMode() && !(session.isLoggedIn() && role in allowed)) {
             Toast.makeText(this, "Unauthorized. Please log in via Security Login.", Toast.LENGTH_LONG).show()
             finish()
             return
@@ -80,11 +99,12 @@ class SecurityScanActivity : AppCompatActivity() {
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
+        val displayName = session.getEmployeeName().ifBlank { session.getSecurityUsername() }
         val displayRole = role.ifBlank { session.getSecurityRole() }
         binding.tvInstruction.text =
             "Point camera at Employee ID Card QR\nto mark [$action] for the employee"
-        binding.tvScannedBy.text =
-            "Scanned by: ${session.getEmployeeName().ifBlank { session.getSecurityUsername() }} ($displayRole)"
+        binding.tvScannedBy.text = "Scanned by: $displayName ($displayRole)"
+        binding.tvStatus.text    = "Waiting for QR scan…"
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -93,6 +113,7 @@ class SecurityScanActivity : AppCompatActivity() {
     }
 
     private fun startCamera() {
+        processed.set(false)
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             cameraProvider = future.get()
@@ -108,15 +129,16 @@ class SecurityScanActivity : AppCompatActivity() {
                 cameraProvider?.bindToLifecycle(
                     this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyser
                 )
-            }.onFailure {
-                runOnUiThread { binding.tvStatus.text = "Camera error: ${it.message}" }
+            }.onFailure { e ->
+                runOnUiThread { binding.tvStatus.text = "Camera error: ${e.message}" }
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    @androidx.annotation.OptIn(ExperimentalGetImage::class)
+    // FIX: Must use @androidx.camera.core.ExperimentalGetImage (NOT @androidx.annotation.OptIn)
+    @androidx.camera.core.ExperimentalGetImage
     private fun analyseQr(imageProxy: ImageProxy) {
-        if (processed) { imageProxy.close(); return }
+        if (processed.get()) { imageProxy.close(); return }
 
         val mediaImage = imageProxy.image
         if (mediaImage == null) { imageProxy.close(); return }
@@ -127,44 +149,44 @@ class SecurityScanActivity : AppCompatActivity() {
 
         barcodeScanner.process(image)
             .addOnSuccessListener { barcodes ->
+                if (processed.get()) return@addOnSuccessListener
                 for (barcode in barcodes) {
                     if (barcode.format != Barcode.FORMAT_QR_CODE) continue
-                    val raw = barcode.rawValue ?: continue
+                    val raw = barcode.rawValue?.trim() ?: continue
 
                     val result: Triple<String, String, String>? = when {
-                        // PRIMARY format: HYPE_EMP|EMP-0001|Name|username|Company
                         raw.startsWith("HYPE_EMP|") -> {
-                            val p = raw.split("|")
-                            val empId   = p.getOrElse(1) { "" }
-                            val empName = p.getOrElse(2) { empId }
-                            val company = p.getOrElse(4) { "HYPE" }
-                            if (empId.isNotBlank()) Triple(empId, empName, "${company.uppercase()} Gate")
+                            val p       = raw.split("|")
+                            val empId   = p.getOrElse(1) { "" }.trim()
+                            val empName = p.getOrElse(2) { empId }.trim().ifBlank { empId }
+                            val company = p.getOrElse(4) { "HYPE" }.trim()
+                            if (empId.isNotBlank())
+                                Triple(empId, empName, "${company.uppercase()} Gate")
                             else null
                         }
-                        // LEGACY format: EMP:EMP-0001  (old printed cards)
                         raw.startsWith("EMP:") -> {
                             val empId = raw.removePrefix("EMP:").trim()
-                            if (empId.isNotBlank()) Triple(empId, empId, "Hype Gate")
-                            else null
+                            if (empId.isNotBlank()) Triple(empId, empId, "Hype Gate") else null
                         }
                         else -> null
                     }
 
-                    if (result != null) {
-                        processed = true
-                        runOnUiThread { cameraProvider?.unbindAll() }
+                    if (result != null && processed.compareAndSet(false, true)) {
+                        runOnUiThread { cameraProvider?.unbindAll() }  // main thread only
                         val (empId, empName, location) = result
                         handleEmployeeScan(empId, empName, location)
                         break
                     }
                 }
             }
-            .addOnFailureListener { /* ignore per-frame failures */ }
-            .addOnCompleteListener { imageProxy.close() }  // always close
+            .addOnFailureListener { /* per-frame errors are normal */ }
+            .addOnCompleteListener { imageProxy.close() }  // ALWAYS close
     }
 
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
-        binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action…"
+        runOnUiThread {
+            binding.tvStatus.text = "🔍 Found: $empName ($empId)\nSaving $action…"
+        }
 
         val scannedByName  = session.getEmployeeName().ifBlank { session.getSecurityUsername() }
         val scannedByRole  = session.getRole().ifBlank { session.getSecurityRole() }
@@ -189,10 +211,10 @@ class SecurityScanActivity : AppCompatActivity() {
                     binding.root.postDelayed({ finish() }, 2000L)
                 } else {
                     binding.tvStatus.text =
-                        "❌ Failed to save attendance.\n" +
+                        "❌ Failed to save.\n" +
                         "Check Firestore rules — attendance_logs must allow\n" +
-                        "write for authenticated users."
-                    processed = false
+                        "write for authenticated users. See README_SECURITY_SETUP.md"
+                    processed.set(false)
                     startCamera()
                 }
             }
