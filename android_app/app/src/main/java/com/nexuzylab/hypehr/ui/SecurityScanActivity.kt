@@ -26,11 +26,7 @@ import java.util.concurrent.Executors
  * SecurityScanActivity — QR scanner used by security / supervisor / manager
  * to mark other employees IN or OUT.
  *
- * FIX: QR was scanning correctly but Firestore write was silently failing because:
- *   1. The scannedBy field was being passed as empName (which was "") instead of
- *      session.getEmployeeName() + session.getRole()
- *   2. logAttendance was only writing to attendance_logs — NOT to the `sessions`
- *      collection that the admin Python app reads from. Now writes to both.
+ * FIX: session.getUid() → session.getEmployeeUid() (SessionManager has no getUid())
  *
  * QR format: HYPE_EMP|EMP-0001|EmployeeName|username|company
  *
@@ -60,7 +56,6 @@ class SecurityScanActivity : AppCompatActivity() {
         setContentView(binding.root)
         session  = SessionManager(this)
 
-        // Guard: must be logged in with a privileged role
         val role = session.getRole()
         if (!session.isLoggedIn() || role !in listOf("security", "supervisor", "manager", "hr", "admin")) {
             Toast.makeText(this, "Unauthorized", Toast.LENGTH_SHORT).show()
@@ -77,7 +72,7 @@ class SecurityScanActivity : AppCompatActivity() {
         binding.tvInstruction.text =
             "Point camera at Employee ID Card QR\nto mark [$action] for the employee"
         binding.tvScannedBy.text =
-            "Scanned by: ${session.getEmployeeName()} (${role})"
+            "Scanned by: ${session.getEmployeeName()} ($role)"
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -85,7 +80,6 @@ class SecurityScanActivity : AppCompatActivity() {
         else cameraPermission.launch(Manifest.permission.CAMERA)
     }
 
-    // ---------------------------------------------------------------- Camera
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -106,7 +100,6 @@ class SecurityScanActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // ---------------------------------------------------------------- QR parse
     @androidx.annotation.OptIn(ExperimentalGetImage::class)
     private fun analyseQr(imageProxy: ImageProxy, provider: ProcessCameraProvider) {
         if (processed) { imageProxy.close(); return }
@@ -117,7 +110,6 @@ class SecurityScanActivity : AppCompatActivity() {
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     val raw = barcode.rawValue ?: continue
-                    // QR format: HYPE_EMP|EMP-0001|Rahul Das|rahul.hype|hype
                     if (barcode.format == Barcode.FORMAT_QR_CODE &&
                         raw.startsWith("HYPE_EMP|")) {
                         processed = true
@@ -134,24 +126,22 @@ class SecurityScanActivity : AppCompatActivity() {
             }.addOnFailureListener { imageProxy.close() }
     }
 
-    // ---------------------------------------------------------------- Save
     private fun handleEmployeeScan(empId: String, empName: String, location: String) {
         binding.tvStatus.text = "Found: $empName ($empId)\nSaving $action…"
 
-        // Who is doing the scanning (the logged-in security/supervisor)
-        val scannedByName = session.getEmployeeName()
-        val scannedByRole = session.getRole()
-        val scannedByUid  = session.getUid()
+        val scannedByName  = session.getEmployeeName()
+        val scannedByRole  = session.getRole()
+        val scannedByUid   = session.getEmployeeUid()   // FIX: was getUid() — method doesn't exist
         val scannedByLabel = "$scannedByName ($scannedByRole)"
 
         lifecycleScope.launch {
             val ok = FirestoreRepository.logAttendance(
-                empId      = empId,
-                uid        = empId,           // employee being scanned
-                action     = action,
-                location   = location,
-                empName    = empName,
-                scannedBy  = scannedByLabel,  // FIX: was empty string before
+                empId        = empId,
+                uid          = empId,
+                action       = action,
+                location     = location,
+                empName      = empName,
+                scannedBy    = scannedByLabel,
                 scannedByUid = scannedByUid
             )
             runOnUiThread {
@@ -171,11 +161,9 @@ class SecurityScanActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
     override fun onDestroy() { cameraExecutor.shutdown(); super.onDestroy() }
 
-    // ---------------------------------------------------------------- Factory
     companion object {
         private const val EXTRA_ACTION = "extra_action"
 
-        /** Called from SecurityDashboardActivity */
         fun start(context: Context, action: String) {
             context.startActivity(
                 Intent(context, SecurityScanActivity::class.java)
