@@ -1,4 +1,6 @@
 # employees.py — Employee CRUD + Duty/Payment Summary + Android App Credentials
+# FIX: Employee photo always loaded from Firestore photo_url on dialog open.
+# FIX: Image cache prevents re-downloading; background thread avoids UI freeze.
 # FIX: create Firebase Auth user when adding employee so Android login works.
 # FIX: Firestore document ID = Firebase Auth UID (not employee_id).
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
@@ -8,7 +10,7 @@ from tkinter import ttk, messagebox, filedialog
 from utils.db import read_all, write
 from utils.firebase_config import get_db, get_bucket
 from datetime import date, datetime
-import hashlib, os, calendar
+import hashlib, os, calendar, threading
 
 try:
     from firebase_admin import auth as fb_auth
@@ -38,17 +40,11 @@ def _bind_scroll(canvas):
     canvas.bind_all("<Button-5>",      _on_linux_down)
 
 def _create_firebase_auth_user(email: str, password: str, display_name: str) -> str:
-    """
-    Creates a Firebase Auth user via Admin SDK.
-    Returns the UID string.
-    Raises Exception on failure.
-    """
     if fb_auth is None:
         raise RuntimeError("firebase_admin not installed. Run: pip install firebase-admin")
     if not email:
         raise ValueError("Email is required to create a Firebase Auth account.")
     try:
-        # If user already exists, return existing UID
         existing = fb_auth.get_user_by_email(email)
         return existing.uid
     except fb_auth.UserNotFoundError:
@@ -62,7 +58,6 @@ def _create_firebase_auth_user(email: str, password: str, display_name: str) -> 
     return user.uid
 
 def _update_firebase_auth_password(uid: str, new_password: str):
-    """Updates password in Firebase Auth for existing UID."""
     if fb_auth is None: return
     try:
         fb_auth.update_user(uid, password=new_password)
@@ -421,7 +416,6 @@ class CredentialsDialog(tk.Toplevel):
                 "app_password_hash":  _hash(plain),
                 "app_password_plain": plain,
             })
-            # Also update Firebase Auth password
             _update_firebase_auth_password(uid, plain)
             self.pass_lbl.config(text=plain)
             messagebox.showinfo("\u2705 Saved", f"Password updated:\n{plain}", parent=self)
@@ -432,19 +426,35 @@ class CredentialsDialog(tk.Toplevel):
 
 # ───────────────────────────── EMPLOYEE DIALOG ─────────────────────────
 class EmployeeDialog(tk.Toplevel):
+    """
+    Add / Edit employee.
+    IMAGE FIX:
+      - On open: always re-fetch photo_url from Firestore (not from local dict)
+        so that the latest uploaded image is shown even after app restart.
+      - _load_existing_thumb runs in a background thread so the UI never freezes.
+      - Uses utils.image_cache so the same URL is only downloaded once per session.
+      - After a new photo is uploaded, cache entry is invalidated so it reloads.
+    """
+
     def __init__(self, parent, mode="add", employee=None, on_save=None):
         super().__init__(parent)
         self.mode       = mode
         self.employee   = employee or {}
         self.on_save    = on_save
-        self.photo_path = None
+        self.photo_path = None      # local path selected by user this session
+        self._photo_tk  = None      # keep reference so GC doesn't destroy it
+        self.db         = get_db()
         self.title("Add Employee" if mode=="add" else f"Edit \u2014 {employee.get('name','')}")
         self.geometry("520x780")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
         self.grab_set()
         self._build()
+        # After building UI, refresh photo from Firestore to get latest URL
+        if mode == "edit":
+            self._refresh_photo_from_firestore()
 
+    # ── UI build ───────────────────────────────────────────────────────
     def _build(self):
         canvas = tk.Canvas(self, bg="#0d1b2a", highlightthickness=0)
         scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -482,31 +492,47 @@ class EmployeeDialog(tk.Toplevel):
             tk.Label(frm, text=t, fg="#f0c040",
                      bg="#0d1b2a", font=("Helvetica",9,"bold")).pack(anchor="w", pady=(0,2))
 
+        # ── Photo section ─────────────────────────────────────────────
         section("\U0001f5bc\ufe0f Photo")
         photo_row = tk.Frame(frm, bg="#0d1b2a"); photo_row.pack(fill="x", pady=4)
-        self.photo_lbl = tk.Label(photo_row, bg="#1a2740", width=10, height=5,
-                                  text="No Photo", fg="#555", relief="flat")
+
+        self.photo_lbl = tk.Label(
+            photo_row, bg="#1a2740", width=10, height=5,
+            text="Loading...", fg="#888", relief="flat"
+        )
         self.photo_lbl.pack(side="left", padx=(0,12))
+
         pb = tk.Frame(photo_row, bg="#0d1b2a"); pb.pack(side="left")
         tk.Button(pb, text="\U0001f4c2 Browse Photo",
                   bg="#1e6f9f", fg="white", relief="flat", padx=10, pady=4,
                   cursor="hand2", command=self._browse_photo).pack(anchor="w", pady=2)
-        self.photo_status = tk.Label(pb,
-            text=" Current: "+("Set" if e.get("photo_url") else "None"),
-            bg="#0d1b2a", fg="#27ae60" if e.get("photo_url") else "#aaa", font=("Arial",8))
+
+        photo_url = e.get("photo_url", "")
+        self.photo_status = tk.Label(
+            pb,
+            text=" Current: " + ("\u2705 Uploaded" if photo_url else "None"),
+            bg="#0d1b2a",
+            fg="#27ae60" if photo_url else "#aaa",
+            font=("Arial", 8)
+        )
         self.photo_status.pack(anchor="w")
         tk.Label(pb, text="JPG/PNG max 2MB", bg="#0d1b2a", fg="#555", font=("Arial",7)).pack(anchor="w")
-        if e.get("photo_url"): self._load_existing_thumb(e["photo_url"])
 
+        # Show existing photo from local dict immediately (may be slightly stale)
+        if photo_url:
+            self._load_photo_url_async(photo_url)
+        else:
+            self.photo_lbl.config(text="No Photo", fg="#555")
+
+        # ── Mandatory fields ──────────────────────────────────────────
         section("\u2014 Mandatory \u2014")
         self.v_name    = field("Full Name",        "name")
-        self.v_email   = field("Email",             "email")   # MOVED UP — needed for Auth
+        self.v_email   = field("Email",             "email")
         self.v_mobile  = field("Mobile",           "mobile")
         self.v_address = field("Address",          "address")
         self.v_aadhaar = field("Aadhaar Number",   "aadhaar")
         self.v_salary  = field("Base Salary (Rs)", "salary")
 
-        # Show a note that email is used for Firebase Auth login
         tk.Label(frm, text="\u2139\ufe0f Email is used as the Firebase login credential for the Android app.",
                  bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w", pady=(0,4))
 
@@ -552,16 +578,76 @@ class EmployeeDialog(tk.Toplevel):
         tk.Button(br, text="Cancel", command=self.destroy,
                   padx=14, relief="flat").pack(side="left")
 
-    def _auto_fill(self, *_):
-        name   = self.v_name.get().strip()
-        mobile = self.v_mobile.get().strip()
-        from utils.db import read
-        domain = (read("settings","company") or {}).get("company_domain","hype")
-        if name:
-            self.v_username.set(f"{name.split()[0].lower()}.{domain}")
-        if name and mobile:
-            self.v_app_pass.set(_default_password(mobile, name))
+    # ── Photo loading (THE BIG FIX) ────────────────────────────────────
+    def _refresh_photo_from_firestore(self):
+        """
+        Re-fetch the employee doc from Firestore to get the LATEST photo_url.
+        Runs Firestore call in a background thread, then updates UI on main thread.
+        This fixes: image shows after upload but disappears on app restart.
+        Root cause: local dict had stale/empty photo_url if photo was uploaded
+        in a previous session; now we always pull fresh from Firestore.
+        """
+        uid = self.employee.get("uid") or self.employee.get("employee_id", "")
+        if not uid:
+            return
 
+        def _fetch():
+            try:
+                doc = self.db.collection("employees").document(uid).get()
+                if doc.exists:
+                    data = doc.to_dict()
+                    fresh_url = data.get("photo_url", "")
+                    # Update local employee dict too
+                    self.employee.update(data)
+                    # Schedule UI update on main thread
+                    self.after(0, lambda: self._apply_photo_url(fresh_url))
+            except Exception:
+                pass  # network error — keep whatever was showing
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_photo_url(self, url: str):
+        """Called on main thread after Firestore fetch."""
+        if not self.winfo_exists():
+            return
+        if url:
+            self.photo_status.config(
+                text=" Current: \u2705 Uploaded",
+                fg="#27ae60"
+            )
+            self._load_photo_url_async(url)
+        else:
+            self.photo_lbl.config(image="", text="No Photo", fg="#555", width=10, height=5)
+            self.photo_status.config(text=" Current: None", fg="#aaa")
+
+    def _load_photo_url_async(self, url: str):
+        """Download + display image in background thread using cache."""
+        if not url:
+            return
+        self.photo_lbl.config(text="Loading...", image="", fg="#888")
+
+        def _fetch():
+            try:
+                from utils.image_cache import get_photo_image
+                ph = get_photo_image(url, size=(80, 80), timeout=15)
+                if ph:
+                    self.after(0, lambda: self._set_photo_tk(ph))
+                else:
+                    self.after(0, lambda: self.photo_lbl.config(
+                        image="", text="Load failed", fg="#e74c3c", width=10, height=5))
+            except Exception:
+                pass
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _set_photo_tk(self, ph):
+        """Set image on label. Keep reference so it isn't GC'd."""
+        if not self.winfo_exists():
+            return
+        self._photo_tk = ph          # CRITICAL: prevent garbage collection
+        self.photo_lbl.config(image=ph, text="", width=80, height=80)
+
+    # ── Browse local photo ─────────────────────────────────────────────
     def _browse_photo(self):
         path = filedialog.askopenfilename(
             title="Select Photo",
@@ -573,35 +659,43 @@ class EmployeeDialog(tk.Toplevel):
         self.photo_status.config(text=f" {os.path.basename(path)}", fg="#27ae60")
         try:
             from PIL import Image, ImageTk
-            img = Image.open(path).convert("RGB"); img.thumbnail((80,80))
-            ph  = ImageTk.PhotoImage(img)
-            self.photo_lbl.config(image=ph, text="", width=80, height=80)
-            self.photo_lbl.image = ph
-        except Exception: pass
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((80, 80), Image.LANCZOS)
+            ph = ImageTk.PhotoImage(img)
+            self._set_photo_tk(ph)
+        except Exception:
+            pass
 
-    def _load_existing_thumb(self, url):
+    # ── Upload photo to Firebase Storage ──────────────────────────────
+    def _upload_photo(self, emp_id: str) -> str:
+        """Upload new photo if user selected one. Returns public URL."""
+        if not self.photo_path:
+            return self.employee.get("photo_url", "")
         try:
-            import urllib.request, io
-            from PIL import Image, ImageTk
-            with urllib.request.urlopen(url, timeout=5) as r: data=r.read()
-            img = Image.open(io.BytesIO(data)).convert("RGB"); img.thumbnail((80,80))
-            ph  = ImageTk.PhotoImage(img)
-            self.photo_lbl.config(image=ph, text="", width=80, height=80)
-            self.photo_lbl.image = ph
-        except Exception: pass
+            from utils.image_cache import clear_url
+            old_url = self.employee.get("photo_url", "")
+            if old_url:
+                clear_url(old_url)   # invalidate cached version
 
-    def _upload_photo(self, emp_id):
-        if not self.photo_path: return self.employee.get("photo_url")
-        try:
             bucket = get_bucket()
-            ext  = os.path.splitext(self.photo_path)[1].lower() or ".jpg"
-            blob = bucket.blob(f"employee_photos/{emp_id}{ext}")
+            ext    = os.path.splitext(self.photo_path)[1].lower() or ".jpg"
+            blob   = bucket.blob(f"employee_photos/{emp_id}{ext}")
             blob.upload_from_filename(self.photo_path, content_type="image/jpeg")
             blob.make_public()
             return blob.public_url
         except Exception as ex:
-            messagebox.showwarning("Photo",f"Saved but upload failed:\n{ex}",parent=self)
-            return self.employee.get("photo_url")
+            messagebox.showwarning("Photo", f"Saved but upload failed:\n{ex}", parent=self)
+            return self.employee.get("photo_url", "")
+
+    def _auto_fill(self, *_):
+        name   = self.v_name.get().strip()
+        mobile = self.v_mobile.get().strip()
+        from utils.db import read
+        domain = (read("settings","company") or {}).get("company_domain","hype")
+        if name:
+            self.v_username.set(f"{name.split()[0].lower()}.{domain}")
+        if name and mobile:
+            self.v_app_pass.set(_default_password(mobile, name))
 
     def _save(self):
         name    = self.v_name.get().strip()
@@ -638,8 +732,7 @@ class EmployeeDialog(tk.Toplevel):
 
         self.title("Saving\u2026"); self.update()
 
-        # ── CREATE FIREBASE AUTH USER (add mode only) ──────────────────
-        uid = self.employee.get("uid", emp_id)   # fallback for edit mode
+        uid = self.employee.get("uid", emp_id)
         if self.mode == "add":
             try:
                 uid = _create_firebase_auth_user(email, app_plain, name)
@@ -656,7 +749,7 @@ class EmployeeDialog(tk.Toplevel):
         photo_url = self._upload_photo(emp_id)
 
         data = {
-            "uid":                 uid,          # Firebase Auth UID
+            "uid":                 uid,
             "employee_id":         emp_id,
             "name":                name,
             "email":               email,
@@ -679,7 +772,6 @@ class EmployeeDialog(tk.Toplevel):
             "role":                self.employee.get("role", "employee"),
         }
 
-        # Save Firestore document using UID as document ID
         db = get_db()
         db.collection("employees").document(uid).set(data)
 
