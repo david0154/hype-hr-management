@@ -8,6 +8,7 @@
 # FIX: Firestore document ID = Firebase Auth UID (not employee_id).
 # FIX: _load() skips duplicate iid to prevent 'Item already exists' TclError.
 # FIX: photo_lbl after() callback checks winfo_exists() before configuring destroyed widget.
+# FIX: _next_employee_id() fetches ALL used IDs from Firestore live, assigns lowest unused gap number.
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
@@ -33,11 +34,10 @@ PAYMENT_MODES = ["CASH", "BANK TRANSFER", "UPI", "CHEQUE"]
 MONTHS = ["January","February","March","April","May","June",
           "July","August","September","October","November","December"]
 
-DELETE_PURGE_DAYS = 45   # days to keep soft-deleted records for non-super_admin
+DELETE_PURGE_DAYS = 45
 
 
 def _ff(col_ref, field, op, val):
-    """Safe Firestore .where() using FieldFilter keyword to suppress UserWarning."""
     if _HAS_FF:
         return col_ref.where(filter=FieldFilter(field, op, val))
     return col_ref.where(field, op, val)
@@ -52,8 +52,37 @@ def _default_password(mobile: str, name: str) -> str:
     return f"{first}{last4}@123"
 
 
+def _next_employee_id(db) -> str:
+    """
+    Fetches ALL employee_id values live from Firestore (including deleted/pending),
+    then assigns the LOWEST unused EMP-XXXX number to prevent duplicates.
+
+    Example: if EMP-0001, EMP-0002, EMP-0004 exist
+             next assigned = EMP-0003  (fills gap first)
+             after that    = EMP-0005  (then continues sequentially)
+    """
+    used = set()
+    try:
+        docs = db.collection("employees").stream()
+        for doc in docs:
+            d = doc.to_dict()
+            eid = d.get("employee_id", "").strip().upper()
+            if eid.startswith("EMP-"):
+                try:
+                    used.add(int(eid[4:]))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+    # Find the lowest positive integer not in used set
+    n = 1
+    while n in used:
+        n += 1
+    return f"EMP-{n:04d}"
+
+
 def _bind_scroll(canvas):
-    """Bind mousewheel scroll to canvas. Auto-unbinds when canvas is destroyed."""
     def _on_mousewheel(event):
         try:
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -86,9 +115,9 @@ def _bind_scroll(canvas):
 
 def _create_firebase_auth_user(email: str, password: str, display_name: str) -> str:
     if fb_auth is None:
-        raise RuntimeError("firebase_admin not installed. Run: pip install firebase-admin")
+        raise RuntimeError("firebase_admin not installed.")
     if not email:
-        raise ValueError("Email is required to create a Firebase Auth account.")
+        raise ValueError("Email is required.")
     try:
         existing = fb_auth.get_user_by_email(email)
         return existing.uid
@@ -111,40 +140,23 @@ def _update_firebase_auth_password(uid: str, new_password: str):
 
 
 def _hard_delete_employee(db, uid: str, emp_id: str, emp_name: str):
-    """
-    HARD DELETE — called only by super_admin.
-    Removes:
-      1. Firestore employees/{uid} document
-      2. All Firestore sessions where employee_id == emp_id
-      3. All Firestore salary_records where employee_id == emp_id
-      4. Firebase Storage photo (employee_photos/)
-      5. Firebase Auth account
-    """
     errors = []
-
-    # 1. Delete Firestore employee doc
     try:
         db.collection("employees").document(uid).delete()
     except Exception as ex:
         errors.append(f"Employee doc: {ex}")
-
-    # 2. Delete all sessions
     try:
         sessions = list(_ff(db.collection("sessions"), "employee_id", "==", emp_id).stream())
         for s in sessions:
             s.reference.delete()
     except Exception as ex:
         errors.append(f"Sessions: {ex}")
-
-    # 3. Delete salary records
     try:
         sal_docs = list(_ff(db.collection("salary_records"), "employee_id", "==", emp_id).stream())
         for s in sal_docs:
             s.reference.delete()
     except Exception as ex:
         errors.append(f"Salary records: {ex}")
-
-    # 4. Delete from Firebase Storage
     try:
         bucket = get_bucket()
         for ext in (".jpg", ".jpeg", ".png", ".webp"):
@@ -154,24 +166,15 @@ def _hard_delete_employee(db, uid: str, emp_id: str, emp_name: str):
                 break
     except Exception as ex:
         errors.append(f"Storage photo: {ex}")
-
-    # 5. Delete Firebase Auth account
     if fb_auth:
         try:
             fb_auth.delete_user(uid)
         except Exception as ex:
             errors.append(f"Auth user: {ex}")
-
     return errors
 
 
 def _soft_delete_employee(db, uid: str, emp_id: str, deleted_by_role: str, deleted_by_id: str):
-    """
-    SOFT DELETE — called by admin / hr.
-    Marks employee status = 'deleted_pending' in Firestore.
-    Actual purge happens after DELETE_PURGE_DAYS days via _purge_expired_soft_deletes().
-    Also disables Firebase Auth account immediately.
-    """
     purge_on = (datetime.now() + timedelta(days=DELETE_PURGE_DAYS)).isoformat()
     db.collection("employees").document(uid).update({
         "status":       "deleted_pending",
@@ -180,7 +183,6 @@ def _soft_delete_employee(db, uid: str, emp_id: str, deleted_by_role: str, delet
         "deleted_role": deleted_by_role,
         "purge_after":  purge_on,
     })
-    # Disable login immediately
     if fb_auth:
         try:
             fb_auth.update_user(uid, disabled=True)
@@ -189,11 +191,6 @@ def _soft_delete_employee(db, uid: str, emp_id: str, deleted_by_role: str, delet
 
 
 def _purge_expired_soft_deletes(db):
-    """
-    Called on startup / refresh. Purges any soft-deleted employees
-    whose purge_after date has passed.
-    Runs in background thread.
-    """
     def _run():
         try:
             now_iso = datetime.now().isoformat()
@@ -270,19 +267,16 @@ class EmployeePanel(tk.Frame):
                  bg="#0d1b2a", fg="#555", font=("Arial", 8)).pack(anchor="w", padx=10)
 
     def _load(self, query: str = ""):
-        # Always clear before re-populating to prevent duplicate iid errors
         self.tree.delete(*self.tree.get_children())
         self.employees = {}
-        seen_ids = set()  # guard against duplicate employee_id from read_all
+        seen_ids = set()
         for e in read_all("employees"):
-            # hide both hard-deleted and soft-deleted from list
             status = e.get("status", "active")
             if status in ("deleted", "deleted_pending"):
                 continue
             emp_id = e.get("employee_id", "")
             if not emp_id:
                 continue
-            # Skip duplicates (e.g. read_all returning same doc twice)
             if emp_id in seen_ids:
                 continue
             seen_ids.add(emp_id)
@@ -306,12 +300,12 @@ class EmployeePanel(tk.Frame):
             ))
 
     def _search(self): self._load(self.search_var.get().strip())
-    def _add_dialog(self): EmployeeDialog(self, mode="add", on_save=self._load)
+    def _add_dialog(self): EmployeeDialog(self, mode="add", on_save=self._load, db=self.db)
     def _edit_selected(self, _=None):
         sel = self.tree.selection()
         if not sel: return
         emp = self.employees.get(self.tree.item(sel[0])["values"][0])
-        if emp: EmployeeDialog(self, mode="edit", employee=emp, on_save=self._load)
+        if emp: EmployeeDialog(self, mode="edit", employee=emp, on_save=self._load, db=self.db)
 
     def _delete_employee(self):
         sel = self.tree.selection()
@@ -349,8 +343,7 @@ class EmployeePanel(tk.Frame):
                         f"{name} ({emp_id}) completely removed from all systems.")
             except Exception as ex:
                 messagebox.showerror("Error", str(ex))
-
-        else:  # admin / hr — soft delete, kept 45 days then auto-purged
+        else:
             msg = (
                 f"Delete employee: {name} ({emp_id})?\n\n"
                 f"  \u2022 Employee will be hidden from all lists\n"
@@ -645,23 +638,56 @@ class CredentialsDialog(tk.Toplevel):
 
 # ─────────────────────────────── EMPLOYEE DIALOG ──────────────────────
 class EmployeeDialog(tk.Toplevel):
-    def __init__(self, parent, mode="add", employee=None, on_save=None):
+    def __init__(self, parent, mode="add", employee=None, on_save=None, db=None):
         super().__init__(parent)
         self.mode       = mode
         self.employee   = employee or {}
         self.on_save    = on_save
         self.photo_path = None
         self._photo_tk  = None
-        self.db         = get_db()
+        self.db         = db or get_db()
+        self._preview_emp_id = None   # assigned after Firestore ID fetch
         self.title("Add Employee" if mode=="add" else f"Edit \u2014 {employee.get('name','')}")
         self.geometry("520x780")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
         self.grab_set()
         self._build()
-        if mode == "edit":
+        if mode == "add":
+            self._fetch_next_emp_id()   # async fetch from Firestore
+        else:
             self._refresh_photo_from_firestore()
 
+    # ----------------------------------------------------------------
+    # SAFE EMP-ID FETCH — runs in background so UI doesn't freeze
+    # ----------------------------------------------------------------
+    def _fetch_next_emp_id(self):
+        """Fetch all used IDs from Firestore in background, show preview in title."""
+        self.title("Add Employee  —  Fetching ID...")
+        def _run():
+            try:
+                next_id = _next_employee_id(self.db)
+                self._preview_emp_id = next_id
+                if self.winfo_exists():
+                    self.after(0, lambda: self.title(
+                        f"Add Employee  —  Will assign: {next_id}"
+                    ))
+                    self.after(0, lambda: self._update_id_label(next_id))
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _update_id_label(self, emp_id: str):
+        if hasattr(self, "_id_preview_lbl") and self.winfo_exists():
+            try:
+                self._id_preview_lbl.config(
+                    text=f"\U0001f194 Will be assigned: {emp_id}",
+                    fg="#27ae60"
+                )
+            except tk.TclError:
+                pass
+
+    # ----------------------------------------------------------------
     def _build(self):
         canvas = tk.Canvas(self, bg="#0d1b2a", highlightthickness=0)
         scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -698,6 +724,16 @@ class EmployeeDialog(tk.Toplevel):
             tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=6)
             tk.Label(frm, text=t, fg="#f0c040",
                      bg="#0d1b2a", font=("Helvetica",9,"bold")).pack(anchor="w", pady=(0,2))
+
+        # Employee ID preview row (only for add mode)
+        if self.mode == "add":
+            id_row = tk.Frame(frm, bg="#0d1b2a"); id_row.pack(fill="x", pady=(0,6))
+            self._id_preview_lbl = tk.Label(
+                id_row,
+                text="\U0001f194 Fetching next Employee ID from Firestore...",
+                bg="#0d1b2a", fg="#f0c040", font=("Arial", 9, "bold")
+            )
+            self._id_preview_lbl.pack(anchor="w")
 
         section("\U0001f5bc\ufe0f Photo")
         photo_row = tk.Frame(frm, bg="#0d1b2a"); photo_row.pack(fill="x", pady=4)
@@ -821,7 +857,6 @@ class EmployeeDialog(tk.Toplevel):
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _safe_photo_fail(self):
-        """Safely update photo_lbl only if dialog still exists."""
         try:
             if self.winfo_exists():
                 self.photo_lbl.config(image="", text="Load failed", fg="#e74c3c", width=10, height=5)
@@ -895,7 +930,8 @@ class EmployeeDialog(tk.Toplevel):
             messagebox.showerror("Error","Email is required.",parent=self); return
 
         if self.mode == "add":
-            emp_id = f"EMP-{len(read_all('employees'))+1:04d}"
+            # Always re-fetch from Firestore at save time for final safety
+            emp_id = _next_employee_id(self.db)
         else:
             emp_id = self.employee["employee_id"]
 
