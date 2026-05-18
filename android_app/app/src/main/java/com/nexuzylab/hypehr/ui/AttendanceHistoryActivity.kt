@@ -4,8 +4,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -13,86 +11,150 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.nexuzylab.hypehr.R
 import com.nexuzylab.hypehr.data.FirestoreRepository
-import com.nexuzylab.hypehr.databinding.ActivityHistoryBinding
+import com.nexuzylab.hypehr.databinding.ActivityAttendanceHistoryBinding
 import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
 /**
- * Hype HR Management — Attendance History
- * Date-wise IN/OUT logs, filtered by month.
- * Developed by David | Nexuzy Lab | nexuzylab@gmail.com
+ * Attendance History with month navigation and summary counts.
+ * Developed by David | Nexuzy Lab
  */
 class AttendanceHistoryActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityHistoryBinding
+    private lateinit var binding: ActivityAttendanceHistoryBinding
     private lateinit var session: SessionManager
+    private val calendar = Calendar.getInstance()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityHistoryBinding.inflate(layoutInflater)
+        binding = ActivityAttendanceHistoryBinding.inflate(layoutInflater)
         setContentView(binding.root)
         session = SessionManager(this)
-        supportActionBar?.title = "Attendance History"
+
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        supportActionBar?.title = "Attendance History"
 
         binding.rvHistory.layoutManager = LinearLayoutManager(this)
 
-        // Build last 12 months for spinner
-        val months = mutableListOf<String>()
-        val cal = Calendar.getInstance()
-        val fmt = SimpleDateFormat("yyyy-MM", Locale.getDefault())
-        repeat(12) {
-            months.add(fmt.format(cal.time))
-            cal.add(Calendar.MONTH, -1)
+        binding.btnPrevMonth.setOnClickListener {
+            calendar.add(Calendar.MONTH, -1)
+            loadHistory()
         }
-        binding.spinnerMonth.adapter = ArrayAdapter(this,
-            android.R.layout.simple_spinner_item, months).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.btnNextMonth.setOnClickListener {
+            calendar.add(Calendar.MONTH, 1)
+            loadHistory()
         }
-        binding.spinnerMonth.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                loadHistory(months[pos])
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-        }
-        loadHistory(months[0])
+
+        loadHistory()
     }
 
-    private fun loadHistory(monthKey: String) {
-        binding.progressBar.visibility = View.VISIBLE
+    private fun loadHistory() {
+        val monthKey = "%04d-%02d".format(
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH) + 1
+        )
+        val monthLabel = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(calendar.time)
+        binding.tvMonth.text = monthLabel
+
+        binding.progressHistory.visibility = View.VISIBLE
+        binding.tvEmpty.visibility = View.GONE
+        binding.rvHistory.visibility = View.GONE
+
         lifecycleScope.launch {
-            val logs = FirestoreRepository.getAttendanceHistory(session.getEmployeeId(), monthKey)
+            val logs = FirestoreRepository.getAttendanceHistory(
+                employeeId = session.getEmployeeId(),
+                monthKey   = monthKey
+            )
             runOnUiThread {
-                binding.progressBar.visibility = View.GONE
-                binding.tvEmpty.visibility = if (logs.isEmpty()) View.VISIBLE else View.GONE
-                binding.rvHistory.adapter = HistoryAdapter(logs)
+                binding.progressHistory.visibility = View.GONE
+                if (logs.isEmpty()) {
+                    binding.tvEmpty.visibility = View.VISIBLE
+                } else {
+                    binding.rvHistory.visibility = View.VISIBLE
+                    binding.rvHistory.adapter = HistoryAdapter(logs)
+
+                    // Summary counts
+                    val presentDates = logs.map { it["date"] as? String ?: "" }.toSet()
+                    val inCount  = logs.count { (it["type"] as? String)?.uppercase() == "IN" }
+                    val outCount = logs.count { (it["type"] as? String)?.uppercase() == "OUT" }
+                    binding.tvSummaryPresent.text = "Days: ${presentDates.size}"
+                    binding.tvSummaryAbsent.text  = "IN: $inCount"
+                    binding.tvSummaryHalf.text    = "OUT: $outCount"
+                }
             }
         }
     }
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
-    private class HistoryAdapter(private val items: List<Map<String, Any>>) :
-        RecyclerView.Adapter<HistoryAdapter.VH>() {
+    // ── Adapter ────────────────────────────────────────────────────────────────
+
+    inner class HistoryAdapter(
+        private val items: List<Map<String, Any>>
+    ) : RecyclerView.Adapter<HistoryAdapter.VH>() {
 
         inner class VH(view: View) : RecyclerView.ViewHolder(view) {
-            val tvDate:     TextView = view.findViewById(R.id.tvLogDate)
-            val tvAction:   TextView = view.findViewById(R.id.tvLogAction)
-            val tvLocation: TextView = view.findViewById(R.id.tvLogLocation)
+            val tvDay      = view.findViewById<TextView>(R.id.tvDay)
+            val tvDayName  = view.findViewById<TextView>(R.id.tvDayName)
+            val tvStatus   = view.findViewById<TextView>(R.id.tvStatus)
+            val tvLocation = view.findViewById<TextView>(R.id.tvLocation)
+            val tvCheckIn  = view.findViewById<TextView>(R.id.tvCheckIn)
+            val tvCheckOut = view.findViewById<TextView>(R.id.tvCheckOut)
+            val tvType     = view.findViewById<TextView>(R.id.tvType)
         }
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-            VH(LayoutInflater.from(parent.context).inflate(R.layout.item_log, parent, false))
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = VH(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_attendance_history, parent, false)
+        )
 
         override fun getItemCount() = items.size
 
-        override fun onBindViewHolder(holder: VH, pos: Int) {
-            val item = items[pos]
-            holder.tvDate.text     = item["date"] as? String ?: ""
-            holder.tvAction.text   = item["action"] as? String ?: ""
-            holder.tvLocation.text = item["location"] as? String ?: ""
+        override fun onBindViewHolder(holder: VH, position: Int) {
+            val item = items[position]
+            val date = item["date"] as? String ?: ""
+            val type = (item["type"] as? String ?: item["action"] as? String ?: "IN").uppercase()
+            val location = item["location"] as? String ?: "-"
+
+            // Parse date for day number and day name
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val d = sdf.parse(date)
+                if (d != null) {
+                    holder.tvDay.text     = SimpleDateFormat("dd", Locale.getDefault()).format(d)
+                    holder.tvDayName.text = SimpleDateFormat("EEE", Locale.getDefault()).format(d)
+                }
+            } catch (e: Exception) {
+                holder.tvDay.text     = date.takeLast(2)
+                holder.tvDayName.text = ""
+            }
+
+            // Format timestamp to time
+            val ts = item["timestamp"]
+            val timeStr = when (ts) {
+                is com.google.firebase.Timestamp ->
+                    SimpleDateFormat("hh:mm a", Locale.getDefault()).format(ts.toDate())
+                is String -> ts
+                else -> "--:--"
+            }
+
+            holder.tvStatus.text   = if (type == "IN") "🟢 Check IN" else "🔴 Check OUT"
+            holder.tvLocation.text = "📍 $location"
+
+            if (type == "IN") {
+                holder.tvCheckIn.text  = "IN: $timeStr"
+                holder.tvCheckOut.text = "OUT: --:--"
+                holder.tvType.text     = "IN"
+                holder.tvType.setBackgroundResource(R.drawable.bg_chip_green)
+            } else {
+                holder.tvCheckIn.text  = "IN: --:--"
+                holder.tvCheckOut.text = "OUT: $timeStr"
+                holder.tvType.text     = "OUT"
+                holder.tvType.setBackgroundResource(R.drawable.bg_chip_red)
+            }
         }
     }
 }

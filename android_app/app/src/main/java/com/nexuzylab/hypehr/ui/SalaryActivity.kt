@@ -17,7 +17,8 @@ import com.nexuzylab.hypehr.utils.SessionManager
 import kotlinx.coroutines.launch
 
 /**
- * SalaryActivity (ui package) — Shows last 12 months of salary slips.
+ * Salary Slips list — shows last 12 months.
+ * Tap any row → opens SalarySlipViewerActivity.
  * Developed by David | Nexuzy Lab
  */
 class SalaryActivity : AppCompatActivity() {
@@ -30,35 +31,29 @@ class SalaryActivity : AppCompatActivity() {
         binding = ActivitySalaryBinding.inflate(layoutInflater)
         setContentView(binding.root)
         session = SessionManager(this)
+
         setSupportActionBar(binding.toolbar)
         supportActionBar?.title = "My Salary Slips"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+
         binding.rvSalary.layoutManager = LinearLayoutManager(this)
-        loadSalary()
+        loadSalarySlips()
     }
 
-    private fun loadSalary() {
-        binding.progressBar.visibility = View.VISIBLE
-        binding.tvEmpty.visibility     = View.GONE
+    private fun loadSalarySlips() {
+        binding.progressSalary.visibility = View.VISIBLE
+        binding.tvNoSlips.visibility      = View.GONE
+        binding.rvSalary.visibility       = View.GONE
+
         lifecycleScope.launch {
-            val list = FirestoreRepository.getSalaryList(session.getEmployeeId())
+            val slips = FirestoreRepository.getSalaryList(session.getEmployeeId())
             runOnUiThread {
-                binding.progressBar.visibility = View.GONE
-                if (list.isEmpty()) {
-                    binding.tvEmpty.visibility = View.VISIBLE
-                    binding.tvEmpty.text = "No salary slips available yet.\nSlips appear after the 1st of each month."
+                binding.progressSalary.visibility = View.GONE
+                if (slips.isEmpty()) {
+                    binding.tvNoSlips.visibility = View.VISIBLE
                 } else {
-                    binding.rvSalary.adapter = SalaryAdapter(list) { item ->
-                        val url = item["slip_url"] as? String ?: ""
-                        if (url.isNotEmpty()) {
-                            startActivity(
-                                Intent(this@SalaryActivity, SalarySlipViewerActivity::class.java)
-                                    .putExtra(SalarySlipViewerActivity.EXTRA_URL, url)
-                                    .putExtra(SalarySlipViewerActivity.EXTRA_TITLE,
-                                        "${item["month"]} ${item["year"]} Salary Slip")
-                            )
-                        }
-                    }
+                    binding.rvSalary.visibility = View.VISIBLE
+                    binding.rvSalary.adapter    = SalaryAdapter(slips)
                 }
             }
         }
@@ -66,43 +61,56 @@ class SalaryActivity : AppCompatActivity() {
 
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
-    private class SalaryAdapter(
-        private val items: List<Map<String, Any>>,
-        private val onView: (Map<String, Any>) -> Unit
+    // ── Adapter ───────────────────────────────────────────────────────────────
+
+    inner class SalaryAdapter(
+        private val slips: List<Map<String, Any>>
     ) : RecyclerView.Adapter<SalaryAdapter.VH>() {
 
         inner class VH(view: View) : RecyclerView.ViewHolder(view) {
-            val tvMonth:  TextView = view.findViewById(R.id.tvSalaryMonth)
-            val tvAmount: TextView = view.findViewById(R.id.tvSalaryAmount)
-            val tvMode:   TextView = view.findViewById(R.id.tvPaymentMode)
-            val tvStatus: TextView = view.findViewById(R.id.tvSlipStatus)
-            val btnView:  View     = view.findViewById(R.id.btnDownloadSlip)
+            val tvMonth    = view.findViewById<TextView>(R.id.tvSalaryMonth)
+            val tvNet      = view.findViewById<TextView>(R.id.tvNetSalary)
+            val tvStatus   = view.findViewById<TextView>(R.id.tvSalaryStatus)
+            val tvPresent  = view.findViewById<TextView>(R.id.tvPresentDays)
         }
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-            VH(LayoutInflater.from(parent.context).inflate(R.layout.item_salary, parent, false))
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = VH(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_salary_card, parent, false)
+        )
 
-        override fun getItemCount() = items.size
+        override fun getItemCount() = slips.size
 
         override fun onBindViewHolder(holder: VH, position: Int) {
-            val item = items[position]
-            holder.tvMonth.text  = "${item["month"] ?: ""} ${item["year"] ?: ""}"
-            holder.tvAmount.text = "₹ %.2f".format(
-                (item["final_salary"] as? Number)?.toDouble() ?: 0.0)
-            holder.tvMode.text   = "Mode: ${item["payment_mode"] as? String ?: "CASH"}"
-            val url = item["slip_url"] as? String ?: ""
-            if (url.isNotEmpty()) {
-                holder.tvStatus.text = "📄 Slip Available"
-                holder.tvStatus.setTextColor(0xFF2E7D32.toInt())
-                holder.btnView.isEnabled = true
-                holder.btnView.alpha = 1f
-            } else {
-                holder.tvStatus.text = "⏳ Generating..."
-                holder.tvStatus.setTextColor(0xFFF57F17.toInt())
-                holder.btnView.isEnabled = false
-                holder.btnView.alpha = 0.4f
+            val slip    = slips[position]
+            val month   = slip["month"] as? String ?: ""
+            val year    = (slip["year"] as? Number)?.toInt() ?: 0
+            val net     = (slip["net_salary"] as? Number)?.toDouble() ?: 0.0
+            val status  = slip["status"] as? String ?: "Pending"
+            val present = (slip["present_days"] as? Number)?.toInt() ?: 0
+            val empId   = slip["employee_id"] as? String ?: session.getEmployeeId()
+
+            holder.tvMonth.text   = "$month $year"
+            holder.tvNet.text     = "₹ %.2f".format(net)
+            holder.tvStatus.text  = status
+            holder.tvPresent.text = "Present: $present days"
+
+            // Status chip color
+            holder.tvStatus.setTextColor(
+                if (status.equals("Paid", ignoreCase = true))
+                    android.graphics.Color.parseColor("#2E7D32")
+                else
+                    android.graphics.Color.parseColor("#E65100")
+            )
+
+            // Tap to view full slip
+            holder.itemView.setOnClickListener {
+                val intent = Intent(this@SalaryActivity, SalarySlipViewerActivity::class.java)
+                intent.putExtra("employee_id", empId)
+                intent.putExtra("month",       month)
+                intent.putExtra("year",        year)
+                startActivity(intent)
             }
-            holder.btnView.setOnClickListener { onView(item) }
         }
     }
 }

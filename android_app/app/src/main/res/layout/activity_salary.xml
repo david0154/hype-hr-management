@@ -4,40 +4,44 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/colorBackground">
+    android:background="#F5F5F5">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="@color/colorPrimary"
-        app:titleTextColor="@color/white"
-        app:title="My Salary Slips"/>
+        android:background="#6C63FF"
+        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar" />
 
+    <!-- Loading -->
     <ProgressBar
-        android:id="@+id/progressBar"
-        style="?attr/progressBarStyle"
+        android:id="@+id/progressSalary"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:visibility="gone"/>
+        android:visibility="gone"
+        android:layout_marginTop="32dp" />
 
+    <!-- Empty state -->
     <TextView
-        android:id="@+id/tvEmpty"
+        android:id="@+id/tvNoSlips"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="No salary slips available yet."
-        android:textSize="14sp"
-        android:textColor="@color/colorTextMuted"
+        android:text="No salary slips found.
+Salary slips are generated on the 1st of each month."
+        android:textColor="#999999"
+        android:textSize="15sp"
         android:gravity="center"
-        android:padding="32dp"
-        android:visibility="gone"/>
+        android:padding="48dp"
+        android:visibility="gone" />
 
+    <!-- Salary slip list -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvSalary"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:padding="8dp"
-        android:clipToPadding="false"/>
+        android:clipToPadding="false"
+        android:paddingTop="8dp"
+        android:paddingBottom="16dp" />
 
 </LinearLayout>
