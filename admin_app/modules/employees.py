@@ -1,16 +1,18 @@
 # employees.py — Employee CRUD + Duty/Payment Summary + Android App Credentials
+# FIX: _bind_scroll unbinds on canvas <Destroy> → no more TclError after dialog close.
+# FIX: super_admin delete = HARD delete (Firestore + sessions + salary + FireStorage + Auth).
+# FIX: admin/hr delete = soft delete, status=deleted_pending, auto-purge after 45 days.
 # FIX: Employee photo always loaded from Firestore photo_url on dialog open.
 # FIX: Image cache prevents re-downloading; background thread avoids UI freeze.
 # FIX: create Firebase Auth user when adding employee so Android login works.
 # FIX: Firestore document ID = Firebase Auth UID (not employee_id).
-# FIX: Delete employee (soft delete status=deleted + Firebase Auth delete).
 # Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from utils.db import read_all, write
 from utils.firebase_config import get_db, get_bucket
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib, os, calendar, threading
 
 try:
@@ -18,10 +20,25 @@ try:
 except ImportError:
     fb_auth = None
 
+try:
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    _HAS_FF = True
+except ImportError:
+    _HAS_FF = False
+
 RELIGIONS     = ["Hindu", "Muslim", "Christian", "Sikh", "Buddhist", "Jain", "Other"]
 PAYMENT_MODES = ["CASH", "BANK TRANSFER", "UPI", "CHEQUE"]
 MONTHS = ["January","February","March","April","May","June",
           "July","August","September","October","November","December"]
+
+DELETE_PURGE_DAYS = 45   # days to keep soft-deleted records for non-super_admin
+
+
+def _ff(col_ref, field, op, val):
+    """Safe Firestore .where() using FieldFilter keyword to suppress UserWarning."""
+    if _HAS_FF:
+        return col_ref.where(filter=FieldFilter(field, op, val))
+    return col_ref.where(field, op, val)
 
 
 def _hash(p: str) -> str:
@@ -32,13 +49,38 @@ def _default_password(mobile: str, name: str) -> str:
     last4 = mobile.strip()[-4:] if len(mobile.strip()) >= 4 else "0000"
     return f"{first}{last4}@123"
 
+
 def _bind_scroll(canvas):
-    def _on_mousewheel(event): canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    def _on_linux_up(event):   canvas.yview_scroll(-1, "units")
-    def _on_linux_down(event): canvas.yview_scroll( 1, "units")
-    canvas.bind_all("<MouseWheel>",    _on_mousewheel)
-    canvas.bind_all("<Button-4>",      _on_linux_up)
-    canvas.bind_all("<Button-5>",      _on_linux_down)
+    """Bind mousewheel scroll to canvas. Auto-unbinds when canvas is destroyed."""
+    def _on_mousewheel(event):
+        try:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except tk.TclError:
+            pass
+    def _on_linux_up(event):
+        try:
+            canvas.yview_scroll(-1, "units")
+        except tk.TclError:
+            pass
+    def _on_linux_down(event):
+        try:
+            canvas.yview_scroll(1, "units")
+        except tk.TclError:
+            pass
+
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+    canvas.bind_all("<Button-4>",   _on_linux_up)
+    canvas.bind_all("<Button-5>",   _on_linux_down)
+
+    def _unbind(event):
+        try:
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+        except Exception:
+            pass
+    canvas.bind("<Destroy>", _unbind)
+
 
 def _create_firebase_auth_user(email: str, password: str, display_name: str) -> str:
     if fb_auth is None:
@@ -66,12 +108,115 @@ def _update_firebase_auth_password(uid: str, new_password: str):
         pass
 
 
+def _hard_delete_employee(db, uid: str, emp_id: str, emp_name: str):
+    """
+    HARD DELETE — called only by super_admin.
+    Removes:
+      1. Firestore employees/{uid} document
+      2. All Firestore sessions where employee_id == emp_id
+      3. All Firestore salary_records where employee_id == emp_id
+      4. Firebase Storage photo (employee_photos/)
+      5. Firebase Auth account
+    """
+    errors = []
+
+    # 1. Delete Firestore employee doc
+    try:
+        db.collection("employees").document(uid).delete()
+    except Exception as ex:
+        errors.append(f"Employee doc: {ex}")
+
+    # 2. Delete all sessions
+    try:
+        sessions = list(_ff(db.collection("sessions"), "employee_id", "==", emp_id).stream())
+        for s in sessions:
+            s.reference.delete()
+    except Exception as ex:
+        errors.append(f"Sessions: {ex}")
+
+    # 3. Delete salary records
+    try:
+        sal_docs = list(_ff(db.collection("salary_records"), "employee_id", "==", emp_id).stream())
+        for s in sal_docs:
+            s.reference.delete()
+    except Exception as ex:
+        errors.append(f"Salary records: {ex}")
+
+    # 4. Delete from Firebase Storage
+    try:
+        bucket = get_bucket()
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            blob = bucket.blob(f"employee_photos/{emp_id}{ext}")
+            if blob.exists():
+                blob.delete()
+                break
+    except Exception as ex:
+        errors.append(f"Storage photo: {ex}")
+
+    # 5. Delete Firebase Auth account
+    if fb_auth:
+        try:
+            fb_auth.delete_user(uid)
+        except Exception as ex:
+            errors.append(f"Auth user: {ex}")
+
+    return errors
+
+
+def _soft_delete_employee(db, uid: str, emp_id: str, deleted_by_role: str, deleted_by_id: str):
+    """
+    SOFT DELETE — called by admin / hr.
+    Marks employee status = 'deleted_pending' in Firestore.
+    Actual purge happens after DELETE_PURGE_DAYS days via _purge_expired_soft_deletes().
+    Also disables Firebase Auth account immediately.
+    """
+    purge_on = (datetime.now() + timedelta(days=DELETE_PURGE_DAYS)).isoformat()
+    db.collection("employees").document(uid).update({
+        "status":       "deleted_pending",
+        "deleted_at":   datetime.now().isoformat(),
+        "deleted_by":   deleted_by_id,
+        "deleted_role": deleted_by_role,
+        "purge_after":  purge_on,
+    })
+    # Disable login immediately
+    if fb_auth:
+        try:
+            fb_auth.update_user(uid, disabled=True)
+        except Exception:
+            pass
+
+
+def _purge_expired_soft_deletes(db):
+    """
+    Called on startup / refresh. Purges any soft-deleted employees
+    whose purge_after date has passed.
+    Runs in background thread.
+    """
+    def _run():
+        try:
+            now_iso = datetime.now().isoformat()
+            pending = list(
+                _ff(db.collection("employees"), "status", "==", "deleted_pending").stream()
+            )
+            for doc in pending:
+                d = doc.to_dict()
+                purge_after = d.get("purge_after", "")
+                if purge_after and purge_after <= now_iso:
+                    uid    = d.get("uid", doc.id)
+                    emp_id = d.get("employee_id", "")
+                    _hard_delete_employee(db, uid, emp_id, d.get("name", ""))
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+
+
 # ──────────────────────────────────────────────────────────────────────
 class EmployeePanel(tk.Frame):
     def __init__(self, parent, role="admin"):
         super().__init__(parent, bg="#0d1b2a")
         self.role = role
         self.db   = get_db()
+        _purge_expired_soft_deletes(self.db)
         self._build_ui()
         self._load()
 
@@ -83,8 +228,7 @@ class EmployeePanel(tk.Frame):
         tk.Button(bar, text="+ Add Employee",  command=self._add_dialog,
                   bg="#27ae60", fg="white", padx=12, relief="flat",
                   font=("Arial", 9, "bold"), pady=5, cursor="hand2").pack(side="right", padx=6)
-        # Delete button — only for admin / super_admin
-        if self.role in ("admin", "super_admin"):
+        if self.role in ("admin", "super_admin", "hr"):
             tk.Button(bar, text="\U0001f5d1 Delete", command=self._delete_employee,
                       bg="#8b0000", fg="white", padx=10, relief="flat",
                       font=("Arial", 9, "bold"), pady=5, cursor="hand2").pack(side="right", padx=4)
@@ -120,22 +264,23 @@ class EmployeePanel(tk.Frame):
         self.tree.pack(fill="both", expand=True, padx=10, pady=4)
         self.tree.bind("<Double-1>", self._edit_selected)
         tk.Label(self,
-                 text="Double-click to edit  |  Select row \u2192 \U0001f4c8 Duty & Pay  or  \U0001f511 Credentials",
+                 text="Double-click to edit  |  Select row → 📈 Duty & Pay  or  🔑 Credentials",
                  bg="#0d1b2a", fg="#555", font=("Arial", 8)).pack(anchor="w", padx=10)
 
     def _load(self, query: str = ""):
         self.tree.delete(*self.tree.get_children())
         self.employees = {}
         for e in read_all("employees"):
+            # hide both hard-deleted and soft-deleted from list
+            status = e.get("status", "active")
+            if status in ("deleted", "deleted_pending"):
+                continue
             if query and query.lower() not in e.get("name","").lower() \
                     and query.lower() not in e.get("employee_id","").lower():
                 continue
-            # skip deleted employees
-            if e.get("status", "") == "deleted":
-                continue
             self.employees[e["employee_id"]] = e
             ph = e.get("app_password_hash", "").strip()
-            has_pass = "\u2705 Active" if ph else "\u274c Not Set"
+            has_pass = "✅ Active" if ph else "❌ Not Set"
             self.tree.insert("", "end", iid=e["employee_id"], values=(
                 e["employee_id"],
                 e.get("name",""),
@@ -146,7 +291,7 @@ class EmployeePanel(tk.Frame):
                 f"Rs. {float(e.get('advance',0)):,.0f}",
                 e.get("username",""),
                 has_pass,
-                e.get("status","active"),
+                status,
             ))
 
     def _search(self): self._load(self.search_var.get().strip())
@@ -165,33 +310,53 @@ class EmployeePanel(tk.Frame):
         emp    = self.employees.get(emp_id)
         if not emp: return
         name = emp.get("name", emp_id)
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Delete employee: {name} ({emp_id})?"
-            f"\n\nThis will:\n"
-            f"  • Set status = 'deleted' in Firestore\n"
-            f"  • Disable their Android app login\n\n"
-            f"Attendance history is kept. This cannot be undone.",
-        ):
-            return
-        try:
-            uid = emp.get("uid", emp_id)
-            # Soft delete: mark as deleted in Firestore
-            self.db.collection("employees").document(uid).update({
-                "status": "deleted",
-                "deleted_at": datetime.now().isoformat(),
-                "deleted_by": "admin",
-            })
-            # Disable Firebase Auth account (won't be able to login)
-            if fb_auth:
-                try:
-                    fb_auth.update_user(uid, disabled=True)
-                except Exception:
-                    pass
-            self._load()
-            messagebox.showinfo("Deleted", f"{name} ({emp_id}) has been deleted.")
-        except Exception as ex:
-            messagebox.showerror("Error", str(ex))
+        uid  = emp.get("uid", emp_id)
+
+        if self.role == "super_admin":
+            msg = (
+                f"PERMANENTLY delete employee: {name} ({emp_id})?\n\n"
+                f"This will remove:\n"
+                f"  • Firestore employee record\n"
+                f"  • ALL attendance / session records\n"
+                f"  • ALL salary records\n"
+                f"  • Firebase Storage photo\n"
+                f"  • Firebase Auth login\n\n"
+                f"⚠️  This CANNOT be undone."
+            )
+            if not messagebox.askyesno("HARD DELETE — Super Admin", msg, icon="warning"):
+                return
+            try:
+                errors = _hard_delete_employee(self.db, uid, emp_id, name)
+                self._load()
+                if errors:
+                    messagebox.showwarning(
+                        "Deleted with warnings",
+                        f"{name} deleted.\nSome sub-steps had errors:\n" + "\n".join(errors)
+                    )
+                else:
+                    messagebox.showinfo("Hard Deleted",
+                        f"{name} ({emp_id}) completely removed from all systems.")
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex))
+
+        else:  # admin / hr — soft delete, kept 45 days then auto-purged
+            msg = (
+                f"Delete employee: {name} ({emp_id})?\n\n"
+                f"  • Employee will be hidden from all lists\n"
+                f"  • Android app login disabled immediately\n"
+                f"  • All data kept for {DELETE_PURGE_DAYS} days then auto-purged\n\n"
+                f"Only a Super Admin can recover before the purge date."
+            )
+            if not messagebox.askyesno("Delete Employee", msg):
+                return
+            try:
+                deleted_by_id = self.employees.get(emp_id, {}).get("uid", "admin")
+                _soft_delete_employee(self.db, uid, emp_id, self.role, deleted_by_id)
+                self._load()
+                messagebox.showinfo("Deleted",
+                    f"{name} ({emp_id}) removed.\nData auto-purged after {DELETE_PURGE_DAYS} days.")
+            except Exception as ex:
+                messagebox.showerror("Error", str(ex))
 
     def _show_credentials(self):
         sel = self.tree.selection()
@@ -218,7 +383,7 @@ class DutyPayDialog(tk.Toplevel):
         super().__init__(parent)
         self.emp = employee
         self.db  = db
-        self.title(f"\U0001f4c8 Duty & Payment \u2014 {employee.get('name','')}")
+        self.title(f"📈 Duty & Payment — {employee.get('name','')}")
         self.geometry("860x640")
         self.resizable(True, True)
         self.configure(bg="#0d1b2a")
@@ -230,7 +395,7 @@ class DutyPayDialog(tk.Toplevel):
         e = self.emp
         info = tk.Frame(self, bg="#1a2740", padx=16, pady=10)
         info.pack(fill="x")
-        tk.Label(info, text=f"\U0001f464  {e.get('name','')}  |  {e.get('employee_id','')}  |  "
+        tk.Label(info, text=f"👤  {e.get('name','')}  |  {e.get('employee_id','')}  |  "
                             f"{e.get('designation','')}  |  {e.get('department','')}",
                  bg="#1a2740", fg="#f0c040", font=("Arial",11,"bold")).pack(side="left")
         tk.Label(info, text=f"Base: Rs.{float(e.get('salary',0)):,.0f}  "
@@ -249,17 +414,17 @@ class DutyPayDialog(tk.Toplevel):
         tk.Entry(ctrl, textvariable=self.year_var, width=6,
                  bg="#1e3a5f", fg="white", insertbackground="white",
                  relief="flat", bd=4).pack(side="left", padx=4)
-        tk.Button(ctrl, text="\U0001f50d Load", bg="#f77f00", fg="white",
+        tk.Button(ctrl, text="🔍 Load", bg="#f77f00", fg="white",
                   relief="flat", padx=12, pady=4, cursor="hand2",
                   command=self._load).pack(side="left", padx=6)
 
         cols = ("date","day","duty","ot","in_t","out_t","hours","day_pay","ot_pay")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=16)
         for col, lbl, w in [
-            ("date",   "Date",    100),("day",    "Day",      70),
-            ("duty",   "Duty",     80),("ot",     "OT",       60),
-            ("in_t",   "IN",       80),("out_t",  "OUT",      80),
-            ("hours",  "Hours",    70),("day_pay","Day Pay",  90),("ot_pay","OT Pay",90),
+            ("date","Date",100),("day","Day",70),
+            ("duty","Duty",80),("ot","OT",60),
+            ("in_t","IN",80),("out_t","OUT",80),
+            ("hours","Hours",70),("day_pay","Day Pay",90),("ot_pay","OT Pay",90),
         ]:
             self.tree.heading(col, text=lbl)
             self.tree.column(col, width=w, anchor="center")
@@ -289,9 +454,7 @@ class DutyPayDialog(tk.Toplevel):
         _, days_in_month = calendar.monthrange(year, month_idx)
 
         try:
-            from google.cloud.firestore_v1.base_query import FieldFilter
-            docs = self.db.collection("sessions") \
-                .where(filter=FieldFilter("employee_id", "==", emp_id)).stream()
+            docs = list(_ff(self.db.collection("sessions"), "employee_id", "==", emp_id).stream())
             sessions = {
                 s["date"]: s
                 for doc in docs
@@ -312,11 +475,11 @@ class DutyPayDialog(tk.Toplevel):
             if sess:
                 duty  = sess.get("duty_status","absent")
                 ot    = sess.get("ot_status","none")
-                in_t  = sess.get("in_time","\u2014")
-                out_t = sess.get("out_time","\u2014")
+                in_t  = sess.get("in_time","—")
+                out_t = sess.get("out_time","—")
                 hours = sess.get("duty_hours","")
             else:
-                duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","\u2014","\u2014",""
+                duty,ot,in_t,out_t,hours = ("sunday" if is_sunday else "absent"),"none","—","—",""
 
             if duty=="full":   dp=day_rate;  total_present+=1
             elif duty=="half": dp=day_rate/2; total_half+=1; total_present+=0.5
@@ -333,17 +496,17 @@ class DutyPayDialog(tk.Toplevel):
                 date_str, weekday,
                 duty.title(), ot.title(),
                 in_t, out_t,
-                f"{hours:.1f}h" if isinstance(hours,float) else (str(hours) or "\u2014"),
-                f"Rs.{dp:,.0f}" if dp else "\u2014",
-                f"Rs.{op:,.0f}" if op else "\u2014",
+                f"{hours:.1f}h" if isinstance(hours,float) else (str(hours) or "—"),
+                f"Rs.{dp:,.0f}" if dp else "—",
+                f"Rs.{op:,.0f}" if op else "—",
             ), tags=("sunday" if is_sunday else duty,))
 
         net_pay = max(0, gross_pay - advance)
         self.summary_lbl.config(
-            text=f"  \u2705 Present: {total_present}d   \U0001f534 Absent: {total_absent}d   "
-                 f"\U0001f7e1 Half Days: {total_half}d   \u23f0 OT Days: {total_ot_days}   |"
-                 f"   \U0001f4b0 Gross: Rs.{gross_pay:,.0f}   \u2796 Advance: Rs.{advance:,.0f}   "
-                 f"\U0001f7e2 Net Pay: Rs.{net_pay:,.0f}  | Mode: {self.emp.get('payment_mode','CASH')}")
+            text=f"  ✅ Present: {total_present}d   🔴 Absent: {total_absent}d   "
+                 f"🟡 Half Days: {total_half}d   ⏰ OT Days: {total_ot_days}   |"
+                 f"   💰 Gross: Rs.{gross_pay:,.0f}   ➖ Advance: Rs.{advance:,.0f}   "
+                 f"🟢 Net Pay: Rs.{net_pay:,.0f}  | Mode: {self.emp.get('payment_mode','CASH')}")
 
 
 # ───────────────────────────── CREDENTIALS ─────────────────────────────
@@ -353,7 +516,7 @@ class CredentialsDialog(tk.Toplevel):
         self.employee   = employee
         self.on_refresh = on_refresh
         self.db         = get_db()
-        self.title(f"\U0001f511 Android Credentials \u2014 {employee.get('name','')}")
+        self.title(f"🔑 Android Credentials — {employee.get('name','')}")
         self.geometry("460x480")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
@@ -373,7 +536,7 @@ class CredentialsDialog(tk.Toplevel):
         _bind_scroll(canvas)
 
         e = self.employee
-        tk.Label(frm, text="\U0001f4f1 Android App Login Credentials",
+        tk.Label(frm, text="📱 Android App Login Credentials",
                  font=("Arial",13,"bold"), bg="#0d1b2a", fg="#f0c040").pack(anchor="w")
         tk.Label(frm, text=f"{e.get('name','')}  |  {e.get('employee_id','')}",
                  bg="#0d1b2a", fg="#aaa", font=("Arial",9)).pack(anchor="w", pady=(2,12))
@@ -388,7 +551,7 @@ class CredentialsDialog(tk.Toplevel):
             lbl = tk.Label(r, text=value, bg="#1a2740", fg="#f0c040",
                            font=("Arial",11,"bold"), anchor="w")
             lbl.pack(side="left", padx=4)
-            tk.Button(r, text="\U0001f4cb Copy",
+            tk.Button(r, text="📋 Copy",
                       command=lambda v=value: self._copy(v),
                       bg="#2c3e50", fg="#ccc", relief="flat",
                       font=("Arial",8), padx=6).pack(side="right")
@@ -405,21 +568,21 @@ class CredentialsDialog(tk.Toplevel):
         cred_row("Username:", username)
         self.pass_lbl = cred_row("Password:", plain_pass)
 
-        st_text  = "\u2705  Password is active" if is_active else "\u26a0\ufe0f  Not yet saved \u2014 click Set Password below"
-        st_color = "#27ae60"               if is_active else "#e67e22"
+        st_text  = "✅  Password is active" if is_active else "⚠️  Not yet saved — click Set Password below"
+        st_color = "#27ae60" if is_active else "#e67e22"
         tk.Label(card, text=st_text, bg="#1a2740", fg=st_color, font=("Arial",8)).pack(anchor="w", pady=(4,0))
 
         info = tk.Frame(frm, bg="#132030", padx=12, pady=10)
         info.pack(fill="x", pady=(0,14))
-        tk.Label(info, text="\u2139\ufe0f  How employee logs into Android app:",
+        tk.Label(info, text="ℹ️  How employee logs into Android app:",
                  bg="#132030", fg="#f0c040", font=("Arial",9,"bold")).pack(anchor="w")
-        tk.Label(info, text=f"  \u2022 Open Hype HR Employee App\n"
-                            f"  \u2022 Email: {e.get('email','(not set)')}\n"
-                            f"  \u2022 Username: {username}\n"
-                            f"  \u2022 Password: {plain_pass}",
+        tk.Label(info, text=f"  • Open Hype HR Employee App\n"
+                            f"  • Email: {e.get('email','(not set)')}\n"
+                            f"  • Username: {username}\n"
+                            f"  • Password: {plain_pass}",
                  bg="#132030", fg="#ccc", font=("Arial",9), justify="left").pack(anchor="w", pady=(4,0))
 
-        tk.Label(frm, text="\u2014 Reset Password \u2014",
+        tk.Label(frm, text="— Reset Password —",
                  bg="#0d1b2a", fg="#ccc", font=("Arial",9,"bold")).pack(anchor="w", pady=(0,6))
         nr = tk.Frame(frm, bg="#0d1b2a"); nr.pack(fill="x", pady=3)
         tk.Label(nr, text="New Password:", width=16, anchor="w",
@@ -430,10 +593,10 @@ class CredentialsDialog(tk.Toplevel):
                  relief="flat", bd=4).pack(side="left", padx=6)
 
         br = tk.Frame(frm, bg="#0d1b2a"); br.pack(fill="x", pady=8)
-        tk.Button(br, text="\U0001f512 Set Password",  command=self._set_password,
+        tk.Button(br, text="🔒 Set Password",  command=self._set_password,
                   bg="#c0392b", fg="white", relief="flat",
                   font=("Arial",9,"bold"), padx=12, pady=5).pack(side="left", padx=(0,8))
-        tk.Button(br, text="\u21ba Reset Default", command=self._reset_to_default,
+        tk.Button(br, text="↺ Reset Default", command=self._reset_to_default,
                   bg="#1e6f9f", fg="white", relief="flat",
                   font=("Arial",9,"bold"), padx=12, pady=5).pack(side="left", padx=(0,8))
         tk.Button(br, text="Close", command=self.destroy,
@@ -441,7 +604,7 @@ class CredentialsDialog(tk.Toplevel):
 
     def _copy(self, text):
         self.clipboard_clear(); self.clipboard_append(text)
-        messagebox.showinfo("\u2714 Copied", f"Copied:\n{text}", parent=self)
+        messagebox.showinfo("✔ Copied", f"Copied:\n{text}", parent=self)
 
     def _set_password(self):
         p = self.new_pass_var.get().strip()
@@ -463,7 +626,7 @@ class CredentialsDialog(tk.Toplevel):
             })
             _update_firebase_auth_password(uid, plain)
             self.pass_lbl.config(text=plain)
-            messagebox.showinfo("\u2705 Saved", f"Password updated:\n{plain}", parent=self)
+            messagebox.showinfo("✅ Saved", f"Password updated:\n{plain}", parent=self)
             if self.on_refresh: self.on_refresh()
         except Exception as ex:
             messagebox.showerror("Error", str(ex), parent=self)
@@ -479,7 +642,7 @@ class EmployeeDialog(tk.Toplevel):
         self.photo_path = None
         self._photo_tk  = None
         self.db         = get_db()
-        self.title("Add Employee" if mode=="add" else f"Edit \u2014 {employee.get('name','')}")
+        self.title("Add Employee" if mode=="add" else f"Edit — {employee.get('name','')}")
         self.geometry("520x780")
         self.resizable(False, True)
         self.configure(bg="#0d1b2a")
@@ -525,7 +688,7 @@ class EmployeeDialog(tk.Toplevel):
             tk.Label(frm, text=t, fg="#f0c040",
                      bg="#0d1b2a", font=("Helvetica",9,"bold")).pack(anchor="w", pady=(0,2))
 
-        section("\U0001f5bc\ufe0f Photo")
+        section("🖼️ Photo")
         photo_row = tk.Frame(frm, bg="#0d1b2a"); photo_row.pack(fill="x", pady=4)
         self.photo_lbl = tk.Label(
             photo_row, bg="#1a2740", width=10, height=5,
@@ -533,13 +696,13 @@ class EmployeeDialog(tk.Toplevel):
         )
         self.photo_lbl.pack(side="left", padx=(0,12))
         pb = tk.Frame(photo_row, bg="#0d1b2a"); pb.pack(side="left")
-        tk.Button(pb, text="\U0001f4c2 Browse Photo",
+        tk.Button(pb, text="📂 Browse Photo",
                   bg="#1e6f9f", fg="white", relief="flat", padx=10, pady=4,
                   cursor="hand2", command=self._browse_photo).pack(anchor="w", pady=2)
         photo_url = e.get("photo_url", "")
         self.photo_status = tk.Label(
             pb,
-            text=" Current: " + ("\u2705 Uploaded" if photo_url else "None"),
+            text=" Current: " + ("✅ Uploaded" if photo_url else "None"),
             bg="#0d1b2a",
             fg="#27ae60" if photo_url else "#aaa",
             font=("Arial", 8)
@@ -551,22 +714,22 @@ class EmployeeDialog(tk.Toplevel):
         else:
             self.photo_lbl.config(text="No Photo", fg="#555")
 
-        section("\u2014 Mandatory \u2014")
+        section("— Mandatory —")
         self.v_name    = field("Full Name",        "name")
         self.v_email   = field("Email",             "email")
         self.v_mobile  = field("Mobile",           "mobile")
         self.v_address = field("Address",          "address")
         self.v_aadhaar = field("Aadhaar Number",   "aadhaar")
         self.v_salary  = field("Base Salary (Rs)", "salary")
-        tk.Label(frm, text="\u2139\ufe0f Email is used as the Firebase login credential for the Android app.",
+        tk.Label(frm, text="ℹ️ Email is used as the Firebase login credential for the Android app.",
                  bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w", pady=(0,4))
 
-        section("\u2014 Job Details \u2014")
+        section("— Job Details —")
         self.v_desig = field("Designation",  "designation")
         self.v_dept  = field("Department",   "department")
         self.v_doj   = field("Date of Join", "date_of_join", default=str(date.today()))
 
-        section("\U0001f4f1 Android App Login")
+        section("📱 Android App Login")
         self.v_username = field("App Username", "username")
         if self.mode == "add":
             self.v_name.trace_add("write",   self._auto_fill)
@@ -579,25 +742,25 @@ class EmployeeDialog(tk.Toplevel):
                      bg="#1e3a5f", fg="#f0c040",
                      insertbackground="white", relief="flat", bd=4).pack(side="left", padx=4)
             tk.Label(pr, text="(auto)", bg="#0d1b2a", fg="#555", font=("Arial",7)).pack(side="left")
-            tk.Label(frm, text="\u2139\ufe0f FirstName + last4 mobile + @123  \u2014 editable",
+            tk.Label(frm, text="ℹ️ FirstName + last4 mobile + @123  — editable",
                      bg="#0d1b2a", fg="#7f8c8d", font=("Arial",8)).pack(anchor="w")
         else:
             plain = e.get("app_password_plain","")
-            disp  = plain if plain else "\u26a0\ufe0f Not set \u2014 use \U0001f511 Credentials"
+            disp  = plain if plain else "⚠️ Not set — use 🔑 Credentials"
             tk.Label(frm, text=f"  Current password: {disp}",
                      bg="#0d1b2a",
                      fg="#27ae60" if plain else "#e67e22", font=("Arial",9)).pack(anchor="w", pady=(2,0))
 
-        section("\u2014 Religion & Bonus \u2014")
+        section("— Religion & Bonus —")
         self.v_religion = dropdown("Religion","religion",RELIGIONS,"Other")
 
-        section("\u2014 Optional \u2014")
+        section("— Optional —")
         self.v_pan      = field("PAN Number",  "pan")
         self.v_pay_mode = dropdown("Payment Mode","payment_mode",PAYMENT_MODES,"CASH")
 
         tk.Frame(frm, height=1, bg="#2c3e50").pack(fill="x", pady=8)
         br = tk.Frame(frm, bg="#0d1b2a"); br.pack(fill="x", pady=6)
-        tk.Button(br, text="\u2714 Save Employee", command=self._save,
+        tk.Button(br, text="✔ Save Employee", command=self._save,
                   bg="#f77f00", fg="white", font=("Arial",10,"bold"),
                   relief="flat", padx=16, pady=6, cursor="hand2").pack(side="left", padx=(0,10))
         tk.Button(br, text="Cancel", command=self.destroy,
@@ -621,7 +784,7 @@ class EmployeeDialog(tk.Toplevel):
     def _apply_photo_url(self, url: str):
         if not self.winfo_exists(): return
         if url:
-            self.photo_status.config(text=" Current: \u2705 Uploaded", fg="#27ae60")
+            self.photo_status.config(text=" Current: ✅ Uploaded", fg="#27ae60")
             self._load_photo_url_async(url)
         else:
             self.photo_lbl.config(image="", text="No Photo", fg="#555", width=10, height=5)
@@ -726,7 +889,7 @@ class EmployeeDialog(tk.Toplevel):
             app_hash  = self.employee.get("app_password_hash","")
             app_plain = self.employee.get("app_password_plain","")
 
-        self.title("Saving\u2026"); self.update()
+        self.title("Saving…"); self.update()
 
         uid = self.employee.get("uid", emp_id)
         if self.mode == "add":
@@ -767,9 +930,9 @@ class EmployeeDialog(tk.Toplevel):
         }
         db = get_db()
         db.collection("employees").document(uid).set(data)
-        msg = f"\u2705 {emp_id} saved!"
+        msg = f"✅ {emp_id} saved!"
         if self.mode == "add":
-            msg += f"\n\n\U0001f4f1 App Login:\n  Email: {email}\n  Username: {uname}\n  Pass: {app_plain}"
+            msg += f"\n\n📱 App Login:\n  Email: {email}\n  Username: {uname}\n  Pass: {app_plain}"
         messagebox.showinfo("Saved", msg, parent=self)
         if self.on_save: self.on_save()
         self.destroy()
