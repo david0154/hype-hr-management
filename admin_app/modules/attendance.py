@@ -9,6 +9,7 @@ FIX: All .where() use FieldFilter keyword arg → no UserWarning.
 FIX: Employee lookup queries by employee_id field (not doc ID = UID).
 FIX: Live emp-ID lookup preview debounced — works for mark present/absent.
 FIX: Raw logs show IST time + parsed location name.
+FIX: Employee name resolved from multiple field names + live Firestore fallback.
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
 import tkinter as tk
@@ -81,6 +82,22 @@ def _parse_location(loc_raw) -> str:
     return s
 
 
+def _extract_name_from_doc(data: dict) -> str:
+    """
+    Try every possible field name an employee record or session doc
+    might store the employee's display name under.
+    Covers Android app fields, web fields, and legacy fields.
+    """
+    for field in (
+        "name", "full_name", "employee_name", "employeeName",
+        "displayName", "display_name", "emp_name",
+    ):
+        val = data.get(field, "")
+        if val and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
 def _find_employee_by_id(db, emp_id: str):
     """
     Find employee by EMP-XXXX id.
@@ -117,10 +134,11 @@ class AttendanceModule:
         self.current_user = current_user
         self.role         = current_user.get("role", "manager")
         self.db           = get_db()
+        self._emp_name_cache = {}   # emp_id -> name  (avoids repeated Firestore lookups)
         self._build_ui()
         self._load_logs()
 
-    # ------------------------------------------------------------------ UI
+    # ───────────────────────────────────────────────────────────────── UI
     def _build_ui(self):
         top = tk.Frame(self.parent, bg="#1a2740")
         top.pack(fill="x", pady=(0, 6))
@@ -187,7 +205,39 @@ class AttendanceModule:
         self.tree.tag_configure("half",    foreground="#f0c040")
         self.tree.tag_configure("absent",  foreground="#e74c3c")
 
-    # ------------------------------------------------------------------ LOAD
+    # ──────────────────── NAME RESOLVER ───────────────────────────────────────
+    def _resolve_name(self, emp_id: str, session_doc: dict) -> str:
+        """
+        Resolve employee display name for a session row.
+        Priority:
+          1. Name already in the session document (any known field)
+          2. In-memory cache (avoids repeated Firestore calls)
+          3. Live Firestore employees lookup by employee_id field
+          4. emp_id itself as last resort (never show blank)
+        """
+        # 1. Name stored directly in session doc
+        name = _extract_name_from_doc(session_doc)
+        if name:
+            self._emp_name_cache[emp_id] = name
+            return name
+
+        # 2. Cache
+        cached = self._emp_name_cache.get(emp_id, "")
+        if cached:
+            return cached
+
+        # 3. Live Firestore lookup
+        _, emp = _find_employee_by_id(self.db, emp_id)
+        if emp:
+            name = _extract_name_from_doc(emp)
+            if name:
+                self._emp_name_cache[emp_id] = name
+                return name
+
+        # 4. Last resort — never show blank
+        return emp_id
+
+    # ───────────────────────────────────────────────────────────────── LOAD
     def _load_logs(self, emp_f: str = "", date_f: str = ""):
         self.tree.delete(*self.tree.get_children())
         try:
@@ -212,8 +262,9 @@ class AttendanceModule:
 
         for doc in docs:
             d       = doc.to_dict()
-            emp_id  = d.get("employee_id", "")
-            name    = d.get("employee_name", d.get("name", ""))
+            emp_id  = d.get("employee_id", "").strip().upper()
+            # Resolve name with multi-step fallback — never blank
+            name    = self._resolve_name(emp_id, d)
             dt      = d.get("date", "")
             duty    = d.get("duty_status", d.get("status", ""))
             ot      = d.get("ot_status", "")
@@ -242,7 +293,7 @@ class AttendanceModule:
         self.filter_date.set("")
         self._load_logs()
 
-    # ------------------------------------------------------------------ MARK PRESENT
+    # ────────────────────────────────────────────────────────── MARK PRESENT
     def _mark_present_dialog(self):
         dlg = tk.Toplevel(self.parent)
         dlg.title("\u2705 Mark Present")
@@ -296,7 +347,7 @@ class AttendanceModule:
             _, emp = _find_employee_by_id(self.db, eid)
             if emp:
                 name_lbl.config(
-                    text=f"\u2705 {emp.get('name', '')} | {emp.get('designation', '')}",
+                    text=f"\u2705 {_extract_name_from_doc(emp)} | {emp.get('designation', '')}",
                     fg="#27ae60"
                 )
             else:
@@ -325,6 +376,7 @@ class AttendanceModule:
                 messagebox.showerror("Not Found",
                     f"No employee found with ID: {eid}", parent=dlg)
                 return
+            emp_name = _extract_name_from_doc(emp)
             duty_hours = 0.0
             try:
                 if in_t and out_t:
@@ -339,7 +391,8 @@ class AttendanceModule:
             doc_id = f"{eid}_{dt}"
             session_data = {
                 "employee_id":   eid,
-                "employee_name": emp.get("name", ""),
+                "employee_name": emp_name,
+                "name":          emp_name,
                 "date":          dt,
                 "duty_status":   duty,
                 "ot_status":     ot,
@@ -353,7 +406,7 @@ class AttendanceModule:
             try:
                 self.db.collection("sessions").document(doc_id).set(session_data)
                 messagebox.showinfo("\u2705 Saved",
-                    f"{emp.get('name', eid)} marked {duty.upper()} on {dt}.", parent=dlg)
+                    f"{emp_name or eid} marked {duty.upper()} on {dt}.", parent=dlg)
                 dlg.destroy()
                 self._load_logs()
             except Exception as ex:
@@ -363,7 +416,7 @@ class AttendanceModule:
                   bg="#27ae60", fg="white", font=("Arial", 10, "bold"),
                   relief="flat", padx=14, pady=5).pack(anchor="w", pady=(10, 0))
 
-    # ------------------------------------------------------------------ MARK ABSENT
+    # ───────────────────────────────────────────────────────── MARK ABSENT
     def _mark_absent_dialog(self):
         dlg = tk.Toplevel(self.parent)
         dlg.title("\u274c Mark Absent")
@@ -401,7 +454,7 @@ class AttendanceModule:
                 name_lbl.config(text=""); return
             _, emp = _find_employee_by_id(self.db, eid)
             if emp:
-                name_lbl.config(text=f"\u2705 {emp.get('name', '')}", fg="#27ae60")
+                name_lbl.config(text=f"\u2705 {_extract_name_from_doc(emp)}", fg="#27ae60")
             else:
                 name_lbl.config(text="\u274c Employee not found", fg="#e74c3c")
 
@@ -424,10 +477,12 @@ class AttendanceModule:
                 messagebox.showerror("Not Found",
                     f"No employee found with ID: {eid}", parent=dlg)
                 return
+            emp_name = _extract_name_from_doc(emp)
             doc_id = f"{eid}_{dt}"
             session_data = {
                 "employee_id":   eid,
-                "employee_name": emp.get("name", ""),
+                "employee_name": emp_name,
+                "name":          emp_name,
                 "date":          dt,
                 "duty_status":   "absent",
                 "ot_status":     "none",
@@ -441,7 +496,7 @@ class AttendanceModule:
             try:
                 self.db.collection("sessions").document(doc_id).set(session_data)
                 messagebox.showinfo("\u2705 Saved",
-                    f"{emp.get('name', eid)} marked ABSENT on {dt}.", parent=dlg)
+                    f"{emp_name or eid} marked ABSENT on {dt}.", parent=dlg)
                 dlg.destroy()
                 self._load_logs()
             except Exception as ex:
@@ -451,7 +506,7 @@ class AttendanceModule:
                   bg="#c0392b", fg="white", font=("Arial", 10, "bold"),
                   relief="flat", padx=14, pady=5).pack(anchor="w", pady=(10, 0))
 
-    # ------------------------------------------------------------------ EDIT
+    # ───────────────────────────────────────────────────────────────── EDIT
     def _edit_selected(self):
         sel = self.tree.selection()
         if not sel:
@@ -508,7 +563,7 @@ class AttendanceModule:
                   bg="#1e6f9f", fg="white", font=("Arial", 10, "bold"),
                   relief="flat", padx=14, pady=5).pack(anchor="w", pady=(14, 0))
 
-    # ------------------------------------------------------------------ DELETE
+    # ─────────────────────────────────────────────────────────────── DELETE
     def _delete_selected(self):
         sel = self.tree.selection()
         if not sel:
