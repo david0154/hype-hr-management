@@ -25,9 +25,9 @@ Firestore structure:
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta
-from utils.firebase_client import get_firestore_client
+from utils.firebase_config import get_db   # fix: was firebase_client.get_firestore_client
 
-# ── Type colours ──────────────────────────────────────────────────────────
+# ── Type colours ────────────────────────────────────────────────────────────────
 TYPE_COLORS = {
     "Festival":   "#f77f00",
     "National":   "#27ae60",
@@ -68,11 +68,11 @@ class HolidayModule:
     def __init__(self, parent, current_user=None):
         self.parent = parent
         self.user   = current_user or {}
-        self.db     = get_firestore_client()
+        self.db     = get_db()          # fix: was get_firestore_client()
         self._build_ui()
         self._load_holidays()
 
-    # ── UI ──────────────────────────────────────────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         self.parent.configure(bg=self.BG)
 
@@ -139,7 +139,7 @@ class HolidayModule:
                  bg=self.BG, fg="#888",
                  font=("Arial", 9)).pack(anchor="w", padx=12, pady=(0, 6))
 
-    # ── Load from Firestore ───────────────────────────────────────────────────
+    # ── Load from Firestore ──────────────────────────────────────────────
     def _load_holidays(self, month_filter=None):
         self.tree.delete(*self.tree.get_children())
         try:
@@ -166,7 +166,7 @@ class HolidayModule:
         except Exception as e:
             self.status_var.set(f"❌ Error: {e}")
 
-    # ── Shared form builder ─────────────────────────────────────────────────
+    # ── Shared form builder ───────────────────────────────────────────────
     def _make_form(self, parent, date_default=""):
         """
         Build a holiday entry form inside `parent`.
@@ -264,7 +264,7 @@ class HolidayModule:
 
         return True
 
-    # ── Add single holiday dialog ─────────────────────────────────────────
+    # ── Add single holiday dialog ────────────────────────────────────────
     def _open_add_dialog(self):
         dlg = tk.Toplevel(self.parent)
         dlg.title("➕ Add Holiday")
@@ -292,7 +292,7 @@ class HolidayModule:
                   font=("Arial", 11, "bold"), relief="flat",
                   padx=16, pady=6).pack(pady=12)
 
-    # ── Add MULTIPLE holidays dialog ─────────────────────────────────────
+    # ── Add MULTIPLE holidays dialog ───────────────────────────────────
     def _open_multi_dialog(self):
         """
         Admin can keep entering holidays one-by-one without closing the dialog.
@@ -373,7 +373,7 @@ class HolidayModule:
                   font=("Arial", 11, "bold"), relief="flat",
                   padx=14, pady=6).pack(side="left", padx=8)
 
-    # ── Filter by month ─────────────────────────────────────────────────────
+    # ── Filter by month ─────────────────────────────────────────────────────────────
     def _filter_month(self):
         val = simpledialog.askstring(
             "Filter by Month",
@@ -394,7 +394,7 @@ class HolidayModule:
                 messagebox.showerror("Invalid Format",
                     "Please use YYYY-MM, e.g. 2026-08")
 
-    # ── Delete ─────────────────────────────────────────────────────────────────
+    # ── Delete ──────────────────────────────────────────────────────────────────────────
     def _delete_selected(self):
         sel = self.tree.selection()
         if not sel:
@@ -411,7 +411,7 @@ class HolidayModule:
         self.tree.delete(sel[0])
         self.status_var.set(f"🗑 Deleted: {vals[0]} — {vals[2]}")
 
-    # ── Eligibility check popup ────────────────────────────────────────────
+    # ── Eligibility check popup ─────────────────────────────────────────────
     def _check_eligibility(self):
         sel = self.tree.selection()
         if not sel:
