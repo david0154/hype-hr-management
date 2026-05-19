@@ -97,7 +97,7 @@ def launch_main_app(current_user):
             import traceback
             traceback.print_exc()
             tk.Label(frame,
-                     text=f"❌ Error loading {label}:\n{exc}\n\nCheck terminal for details.",
+                     text=f"\u274c Error loading {label}:\n{exc}\n\nCheck terminal for details.",
                      bg="#0d1b2a", fg="#ff6666", font=("Arial", 10),
                      justify="left", wraplength=700).pack(padx=30, pady=40)
 
@@ -127,6 +127,10 @@ def launch_main_app(current_user):
         from modules.id_card import IdCardModule
         IdCardModule(f, u)
 
+    def load_holidays(f, u):
+        from modules.holiday import HolidayModule
+        HolidayModule(f, u)
+
     def load_settings(f, u):
         from modules.settings import SettingsModule
         SettingsModule(f, u)
@@ -137,6 +141,7 @@ def launch_main_app(current_user):
     add_tab("💰 Salary",     "salary",       load_salary)
     add_tab("🔳 QR Codes",   "qr_generator", load_qr)
     add_tab("🪚 ID Cards",   "id_card",      load_id_card)
+    add_tab("🎉 Holidays",   "holidays",     load_holidays)
     add_tab("⚙ Settings",   "settings",     load_settings)
 
     root.mainloop()
