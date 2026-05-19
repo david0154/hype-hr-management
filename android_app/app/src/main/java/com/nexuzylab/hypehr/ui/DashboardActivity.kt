@@ -21,10 +21,6 @@ import java.util.TimeZone
 
 /**
  * DashboardActivity — Employee-facing home screen.
- *
- * FIX: loadCompanyName() fetches settings/company → company_name field
- *      and updates binding.tvCompany (id in activity_dashboard.xml).
- *
  * Developed by David | Nexuzy Lab
  */
 class DashboardActivity : AppCompatActivity() {
@@ -47,15 +43,10 @@ class DashboardActivity : AppCompatActivity() {
         loadCompanyName()
         loadEmployeeProfile()
         loadStats()
+        loadUpcomingHolidays()
         setupButtons()
     }
 
-    /**
-     * Fetch real company name from Firestore.
-     * Priority: company_name → name → title → "Your Company"
-     * Matches Firebase: settings/company → company_name: "Nexuzy lab"
-     * Updates binding.tvCompany (xml id: tvCompany in activity_dashboard.xml)
-     */
     private fun loadCompanyName() {
         db.collection("settings").document("company").get()
             .addOnSuccessListener { doc ->
@@ -65,9 +56,6 @@ class DashboardActivity : AppCompatActivity() {
                     ?: "Your Company"
                 binding.tvCompany.text = name
                 supportActionBar?.subtitle = name
-            }
-            .addOnFailureListener {
-                android.util.Log.w("DashboardActivity", "loadCompanyName failed: ${it.message}")
             }
     }
 
@@ -103,6 +91,41 @@ class DashboardActivity : AppCompatActivity() {
                 if (!desg.isNullOrEmpty()) binding.tvDesignation.text = desg
             }
         }
+    }
+
+    /**
+     * Load next upcoming paid holiday and show it in the dashboard card.
+     * Uses Firestore collection: holidays, ordered by date ascending.
+     */
+    private fun loadUpcomingHolidays() {
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).format(Date())
+        db.collection("holidays")
+            .whereGreaterThanOrEqualTo("date", todayStr)
+            .orderBy("date")
+            .limit(1)
+            .get()
+            .addOnSuccessListener { snap ->
+                val doc = snap.documents.firstOrNull()
+                if (doc != null) {
+                    val date     = doc.getString("date") ?: ""
+                    val occasion = doc.getString("occasion") ?: "Holiday"
+                    val type     = doc.getString("type") ?: ""
+                    val paid     = doc.getBoolean("paid") ?: true
+
+                    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
+                    val displayFmt = SimpleDateFormat("dd MMM yyyy", Locale.ENGLISH)
+                    val displayDate = runCatching { displayFmt.format(sdf.parse(date)!!) }.getOrDefault(date)
+
+                    val paidLabel = if (paid) "💰 Paid" else "Unpaid"
+                    binding.tvNextHoliday.text = "$occasion — $displayDate ($type, $paidLabel)"
+                    binding.cardHoliday.visibility = View.VISIBLE
+                } else {
+                    binding.cardHoliday.visibility = View.GONE
+                }
+            }
+            .addOnFailureListener {
+                binding.cardHoliday.visibility = View.GONE
+            }
     }
 
     private fun loadStats() {
@@ -158,6 +181,9 @@ class DashboardActivity : AppCompatActivity() {
             val intent = Intent(this, IdCardActivity::class.java)
             intent.putExtra("employee_id", session.getEmployeeUid())
             startActivity(intent)
+        }
+        binding.btnHolidays.setOnClickListener {
+            startActivity(Intent(this, HolidayActivity::class.java))
         }
         binding.btnLogout.setOnClickListener {
             FirebaseAuth.getInstance().signOut()

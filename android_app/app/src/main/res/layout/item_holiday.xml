@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="3dp"
+    app:cardBackgroundColor="@color/colorSurface"
+    android:layout_marginBottom="10dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Date -->
+        <TextView
+            android:id="@+id/tvHDate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="01 Jan 2025, Wednesday"
+            android:textSize="13sp"
+            android:textColor="@color/colorTextMuted"
+            android:layout_marginBottom="4dp" />
+
+        <!-- Occasion name -->
+        <TextView
+            android:id="@+id/tvHOccasion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Diwali"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="@color/colorText"
+            android:layout_marginBottom="4dp" />
+
+        <!-- Type badge + Paid in a row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:id="@+id/tvHType"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Festival"
+                android:textSize="12sp"
+                android:textColor="@color/colorPrimary"
+                android:background="@drawable/bg_badge_primary"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="2dp"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/tvHPaid"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="✅ Paid Holiday"
+                android:textSize="12sp"
+                android:textColor="@color/colorSuccess" />
+
+        </LinearLayout>
+
+        <!-- Eligibility -->
+        <TextView
+            android:id="@+id/tvHEligible"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🎉 You are eligible"
+            android:textSize="12sp"
+            android:textColor="@color/colorSuccess"
+            android:visibility="gone" />
+
+    </LinearLayout>
+</androidx.cardview.widget.CardView>

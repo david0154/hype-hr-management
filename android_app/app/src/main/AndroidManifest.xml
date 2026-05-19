@@ -1,104 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Permissions -->
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.CAMERA"/>
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.WAKE_LOCK"/>
-    <!-- Storage: legacy write for API ≤28, read for API ≤32, media images for API 33+ -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28"/>
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
-        android:name=".HypeHRApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="Hype HR"
+        android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.HypeHR">
 
-        <!-- Splash -->
-        <activity
-            android:name=".ui.SplashActivity"
+        <activity android:name=".ui.SplashActivity"
             android:exported="true"
             android:theme="@style/Theme.HypeHR.Splash">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Employee flow -->
-        <activity android:name=".ui.LoginActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Login"/>
-        <activity android:name=".ui.PinSetupActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Pin"
-            android:windowSoftInputMode="adjustResize"/>
-        <activity android:name=".ui.PinLoginActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Pin"
-            android:windowSoftInputMode="adjustResize"/>
-        <activity android:name=".ui.PinEntryActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Pin"
-            android:windowSoftInputMode="adjustResize"/>
-        <activity android:name=".ui.DashboardActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-        <activity android:name=".ui.AttendanceActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-        <activity android:name=".ui.SalaryActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-        <activity android:name=".ui.AttendanceHistoryActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-        <activity android:name=".ui.SalarySlipViewerActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-
-        <!-- ID Card — generates employee ID card image on-device -->
-        <activity android:name=".ui.IdCardActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-
-        <!-- Security / Supervisor flow -->
-        <activity android:name=".ui.SecurityLoginActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Login"/>
-        <activity android:name=".ui.SecurityDashboardActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-        <activity android:name=".ui.SecurityScanActivity"
-            android:exported="false"
-            android:theme="@style/Theme.HypeHR.Dashboard"/>
-
-        <!-- Boot receiver — schedules WorkManager on device boot -->
-        <receiver
-            android:name=".receivers.MonthlyBootReceiver"
-            android:exported="true"
-            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
-            </intent-filter>
-        </receiver>
-
-        <!-- Background monthly salary service (fallback) -->
-        <service
-            android:name=".services.MonthlySalaryService"
-            android:exported="false"
-            android:stopWithTask="false"/>
+        <activity android:name=".ui.LoginActivity" android:exported="false" />
+        <activity android:name=".ui.login.LoginActivity" android:exported="false" />
+        <activity android:name=".ui.DashboardActivity" android:exported="false" />
+        <activity android:name=".ui.AttendanceActivity" android:exported="false" />
+        <activity android:name=".ui.AttendanceHistoryActivity" android:exported="false" />
+        <activity android:name=".ui.SalaryActivity" android:exported="false" />
+        <activity android:name=".ui.SalarySlipViewerActivity" android:exported="false" />
+        <activity android:name=".ui.IdCardActivity" android:exported="false" />
+        <activity android:name=".ui.HolidayActivity" android:exported="false" />
+        <activity android:name=".ui.SecurityLoginActivity" android:exported="false" />
+        <activity android:name=".ui.SecurityDashboardActivity" android:exported="false" />
+        <activity android:name=".ui.SecurityScanActivity" android:exported="false" />
+        <activity android:name=".ui.PinEntryActivity" android:exported="false" />
+        <activity android:name=".ui.PinLoginActivity" android:exported="false" />
+        <activity android:name=".ui.PinSetupActivity" android:exported="false" />
 
     </application>
 </manifest>
