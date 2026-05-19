@@ -18,32 +18,33 @@ PERMISSIONS = {
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
         "id_card", "manage_users", "reports", "mark_attendance",
-        "security"
+        "security", "holidays",
     ],
     "admin": [
         "dashboard", "employees", "attendance", "salary",
         "bonus", "salary_raise", "qr_generator", "settings",
-        "id_card", "reports", "mark_attendance", "security"
+        "id_card", "reports", "mark_attendance", "security",
+        "holidays",
     ],
     "hr": [
         "dashboard", "employees", "attendance",
         "salary", "bonus", "id_card", "reports",
-        "mark_attendance", "security"
+        "mark_attendance", "security", "holidays",
     ],
     "ca": [
         "dashboard", "salary", "bonus", "salary_raise",
-        "attendance", "reports"
+        "attendance", "reports", "holidays",
     ],
     "manager": [
         "dashboard", "attendance", "employees",
-        "mark_attendance", "security"
+        "mark_attendance", "security", "holidays",
     ],
     "supervisor": [
         "dashboard", "attendance", "employees",
-        "mark_attendance", "security"
+        "mark_attendance", "security", "holidays",
     ],
     "security": [
-        "security"
+        "security",
     ],
 }
 
