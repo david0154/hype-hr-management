@@ -5,6 +5,8 @@ Developed by David | Nexuzy Lab
 
 Features:
  - Add / Edit / Delete holidays in Firestore  (collection: holidays)
+ - Bulk import from a list (seed data)
+ - Month view — see all holidays in any given month
  - Each holiday document:
      date      : "YYYY-MM-DD"
      occasion  : "Diwali"  (display name)
@@ -13,8 +15,6 @@ Features:
  - Eligibility rule:
      Employee must have attendance marked AT LEAST 1 day in
      [date-2 days  …  date+2 days]  window to be counted as eligible.
- - View upcoming holidays
- - View which employees are eligible for a specific holiday
 """
 
 import os
@@ -59,6 +59,16 @@ def init_firebase():
 # ─── Helpers ────────────────────────────────────────────────────────────────
 HOLIDAY_TYPES = ["Festival", "National", "Optional", "Restricted"]
 
+# ── SEED DATA ──────────────────────────────────────────────────────────────
+# October 2026 pre-loaded holidays. Add more here before running bulk import.
+SEED_HOLIDAYS = [
+    {"date": "2026-10-02", "occasion": "Gandhi Jayanti",  "type": "National", "paid": True},
+    {"date": "2026-10-20", "occasion": "Kali Puja",       "type": "Festival", "paid": True},
+    {"date": "2026-10-22", "occasion": "Bhai Phonta",     "type": "Festival", "paid": True},
+    {"date": "2026-10-24", "occasion": "Durga Puja",      "type": "Festival", "paid": True},
+    {"date": "2026-10-31", "occasion": "Diwali",          "type": "Festival", "paid": True},
+]
+
 def parse_date(s: str) -> Optional[datetime]:
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
         try:
@@ -68,7 +78,6 @@ def parse_date(s: str) -> Optional[datetime]:
     return None
 
 def doc_id_from_date(date_str: str) -> str:
-    """Use YYYY-MM-DD as Firestore document ID for easy querying."""
     return date_str.replace("-", "")
 
 # ─── Holiday CRUD ────────────────────────────────────────────────────────────
@@ -102,6 +111,34 @@ def add_holiday(db):
     db.collection("holidays").document(doc_id).set(data)
     console.print(f"[green]✅ Holiday saved:[/green] {date_str} — {occasion} ({h_type}, {'Paid' if paid else 'Unpaid'})")
 
+
+def bulk_import_seed(db):
+    """Import all SEED_HOLIDAYS into Firestore at once."""
+    console.print(f"\n[bold cyan]=== Bulk Import Seed Holidays ===[/bold cyan]")
+    console.print(f"[dim]Will import {len(SEED_HOLIDAYS)} holidays:[/dim]\n")
+
+    # Preview table
+    table = Table(show_lines=True)
+    table.add_column("Date",     style="cyan")
+    table.add_column("Occasion", style="bold")
+    table.add_column("Type")
+    table.add_column("Paid")
+    for h in SEED_HOLIDAYS:
+        table.add_row(h["date"], h["occasion"], h["type"], "✅ Yes" if h["paid"] else "❌ No")
+    console.print(table)
+
+    if not Confirm.ask("\nImport all these holidays?", default=True):
+        console.print("[yellow]Cancelled.[/yellow]")
+        return
+
+    batch = db.batch()
+    for h in SEED_HOLIDAYS:
+        doc_ref = db.collection("holidays").document(doc_id_from_date(h["date"]))
+        batch.set(doc_ref, {**h, "created_at": firestore.SERVER_TIMESTAMP})
+    batch.commit()
+    console.print(f"[green]✅ {len(SEED_HOLIDAYS)} holidays imported successfully![/green]")
+
+
 def list_holidays(db, show_table=True) -> list:
     docs = db.collection("holidays").order_by("date").stream()
     holidays = []
@@ -114,17 +151,75 @@ def list_holidays(db, show_table=True) -> list:
         if not holidays:
             console.print("[yellow]No holidays found.[/yellow]")
             return holidays
-        table = Table(title="Holidays", show_lines=True)
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Date", style="cyan")
+        table = Table(title="All Holidays", show_lines=True)
+        table.add_column("#",        style="dim", width=4)
+        table.add_column("Date",     style="cyan")
+        table.add_column("Day",      style="dim")
         table.add_column("Occasion", style="bold")
         table.add_column("Type")
         table.add_column("Paid")
         for i, h in enumerate(holidays, 1):
+            dt = parse_date(h.get("date", ""))
+            day_name = dt.strftime("%A") if dt else ""
             paid_icon = "✅ Yes" if h.get("paid") else "❌ No"
-            table.add_row(str(i), h.get("date", ""), h.get("occasion", ""), h.get("type", ""), paid_icon)
+            table.add_row(str(i), h.get("date", ""), day_name, h.get("occasion", ""), h.get("type", ""), paid_icon)
         console.print(table)
     return holidays
+
+
+def view_month_holidays(db):
+    """Show all holidays in a specific month."""
+    console.print("\n[bold cyan]=== View Holidays by Month ===[/bold cyan]")
+    month_input = Prompt.ask("Enter month (YYYY-MM, e.g. 2026-10)", default="2026-10")
+    try:
+        datetime.strptime(month_input, "%Y-%m")
+    except ValueError:
+        console.print("[red]Invalid format. Use YYYY-MM[/red]")
+        return
+
+    docs = (
+        db.collection("holidays")
+        .where("date", ">=", f"{month_input}-01")
+        .where("date", "<=", f"{month_input}-31")
+        .order_by("date")
+        .stream()
+    )
+    holidays = [doc.to_dict() for doc in docs]
+
+    if not holidays:
+        console.print(f"[yellow]No holidays found for {month_input}.[/yellow]")
+        return
+
+    # Month header
+    dt_month = datetime.strptime(month_input, "%Y-%m")
+    console.print(f"\n[bold magenta]📅 {dt_month.strftime('%B %Y')} — {len(holidays)} Holiday(s)[/bold magenta]\n")
+
+    table = Table(show_lines=True)
+    table.add_column("Date",     style="cyan", width=12)
+    table.add_column("Day",      style="dim",  width=12)
+    table.add_column("Occasion", style="bold")
+    table.add_column("Type",     width=12)
+    table.add_column("Paid",     width=10)
+    for h in holidays:
+        dt = parse_date(h.get("date", ""))
+        day_name = dt.strftime("%A") if dt else ""
+        paid_icon = "✅ Paid" if h.get("paid") else "❌ Unpaid"
+        h_type = h.get("type", "")
+        type_color = {
+            "Festival": "yellow",
+            "National": "green",
+            "Optional": "blue",
+            "Restricted": "red",
+        }.get(h_type, "white")
+        table.add_row(
+            h.get("date", ""),
+            day_name,
+            h.get("occasion", ""),
+            f"[{type_color}]{h_type}[/{type_color}]",
+            paid_icon,
+        )
+    console.print(table)
+
 
 def delete_holiday(db):
     holidays = list_holidays(db)
@@ -142,14 +237,9 @@ def delete_holiday(db):
         db.collection("holidays").document(h["_id"]).delete()
         console.print("[green]Deleted.[/green]")
 
+
 # ─── Eligibility check ───────────────────────────────────────────────────────
 def check_eligibility(db):
-    """
-    For a chosen holiday, list all employees who have attendance within
-    [holiday_date - 2 days ... holiday_date + 2 days].
-    Attendance documents live at:  attendance/{YYYY-MM}/{employee_id}/{records}
-    We check the simplified daily doc path used by the app.
-    """
     console.print("\n[bold cyan]=== Holiday Eligibility Check ===[/bold cyan]")
     holidays = list_holidays(db)
     if not holidays:
@@ -165,11 +255,10 @@ def check_eligibility(db):
     h_date = datetime.strptime(h["date"], "%Y-%m-%d")
     window_dates = [
         (h_date + timedelta(days=d)).strftime("%Y-%m-%d")
-        for d in range(-2, 3)  # -2, -1, 0, +1, +2
+        for d in range(-2, 3)
     ]
-    console.print(f"Checking attendance window: {window_dates[0]} to {window_dates[-1]}")
+    console.print(f"Checking window: [cyan]{window_dates[0]}[/cyan] → [cyan]{window_dates[-1]}[/cyan]")
 
-    # Collect all employee IDs from attendance collection
     employees_ref = db.collection("employees").stream()
     employees = {doc.id: doc.to_dict().get("name", doc.id) for doc in employees_ref}
 
@@ -177,13 +266,13 @@ def check_eligibility(db):
         console.print("[yellow]No employees found in Firestore.[/yellow]")
         return
 
-    eligible = []
+    eligible   = []
     ineligible = []
 
     for emp_id, emp_name in employees.items():
         found = False
         for w_date in window_dates:
-            month_key = w_date[:7]  # YYYY-MM
+            month_key = w_date[:7]
             att_ref = (
                 db.collection("attendance")
                 .document(month_key)
@@ -196,23 +285,19 @@ def check_eligibility(db):
             if any(True for _ in att_ref):
                 found = True
                 break
-        if found:
-            eligible.append((emp_id, emp_name))
-        else:
-            ineligible.append((emp_id, emp_name))
+        (eligible if found else ineligible).append((emp_id, emp_name))
 
-    table = Table(title=f"Eligibility for {h['occasion']} ({h['date']})", show_lines=True)
-    table.add_column("Status", width=12)
-    table.add_column("Employee ID")
+    table = Table(title=f"Eligibility — {h['occasion']} ({h['date']})", show_lines=True)
+    table.add_column("Status",      width=14)
+    table.add_column("Employee ID", style="dim")
     table.add_column("Name")
-
     for eid, ename in eligible:
-        table.add_row("✅ Eligible", eid, ename)
+        table.add_row("[green]✅ Eligible[/green]",     eid, ename)
     for eid, ename in ineligible:
-        table.add_row("❌ Not Eligible", eid, ename)
-
+        table.add_row("[red]❌ Not Eligible[/red]", eid, ename)
     console.print(table)
-    console.print(f"\n[green]Eligible: {len(eligible)}[/green]  [red]Not Eligible: {len(ineligible)}[/red]")
+    console.print(f"\n[green]Eligible: {len(eligible)}[/green]   [red]Not Eligible: {len(ineligible)}[/red]")
+
 
 # ─── Main menu ───────────────────────────────────────────────────────────────
 def main():
@@ -222,22 +307,22 @@ def main():
 
     while True:
         console.print("[bold]--- Menu ---[/bold]")
-        console.print(" [1] Add / Update Holiday")
-        console.print(" [2] List All Holidays")
-        console.print(" [3] Delete Holiday")
-        console.print(" [4] Check Eligibility for a Holiday")
-        console.print(" [5] Exit")
-        choice = Prompt.ask("Select", choices=["1","2","3","4","5"], default="2")
+        console.print(" [1] Add / Update Holiday (single)")
+        console.print(" [2] Bulk Import Seed Holidays (Oct 2026 pre-loaded)")
+        console.print(" [3] List All Holidays")
+        console.print(" [4] View Holidays by Month")
+        console.print(" [5] Delete Holiday")
+        console.print(" [6] Check Eligibility for a Holiday")
+        console.print(" [7] Exit")
+        choice = Prompt.ask("Select", choices=["1","2","3","4","5","6","7"], default="3")
 
-        if choice == "1":
-            add_holiday(db)
-        elif choice == "2":
-            list_holidays(db)
-        elif choice == "3":
-            delete_holiday(db)
-        elif choice == "4":
-            check_eligibility(db)
-        elif choice == "5":
+        if   choice == "1": add_holiday(db)
+        elif choice == "2": bulk_import_seed(db)
+        elif choice == "3": list_holidays(db)
+        elif choice == "4": view_month_holidays(db)
+        elif choice == "5": delete_holiday(db)
+        elif choice == "6": check_eligibility(db)
+        elif choice == "7":
             console.print("Bye!")
             break
 
