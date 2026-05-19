@@ -8,7 +8,7 @@ Features:
   - Manual Employee ID entry fallback (no webcam needed)
   - Auto IN/OUT toggle per employee per day
   - Logs to Firestore: attendance_logs + sessions
-  - Shows today’s scan log live
+  - Shows today's scan log live
   - Works offline with local log saved to security_log.csv
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -152,7 +152,7 @@ class SecurityModule:
     def _build_log_panel(self, parent):
         hdr = tk.Frame(parent, bg="#1a2740")
         hdr.pack(fill="x", pady=(0, 4))
-        tk.Label(hdr, text="📋 Today’s Scan Log",
+        tk.Label(hdr, text="📋 Today's Scan Log",
                  bg="#1a2740", fg="#f0c040",
                  font=("Arial", 11, "bold")).pack(side="left", padx=8, pady=4)
         tk.Button(hdr, text="🔄 Refresh", bg="#555", fg="white",
@@ -181,9 +181,65 @@ class SecurityModule:
         self.log_count_lbl.pack(anchor="w", padx=4)
 
     # ────────────────── EMPLOYEE CACHE ───────────────────────
+    def _get_emp_name_fields(self, data: dict) -> str:
+        """
+        Try multiple common field names for employee name.
+        Covers: name, full_name, employee_name, displayName, display_name
+        Returns the first non-empty value found, or empty string.
+        """
+        for field in ("name", "full_name", "employee_name", "displayName", "display_name"):
+            val = data.get(field, "")
+            if val and str(val).strip():
+                return str(val).strip()
+        return ""
+
     def _refresh_emp_cache(self):
-        for e in read_all("employees"):
-            self._emp_cache[e.get("employee_id", "")] = e.get("name", "Unknown")
+        """Load all employees into cache. Handles multiple possible name fields."""
+        try:
+            for e in read_all("employees"):
+                eid = e.get("employee_id", "").strip().upper()
+                if eid:
+                    self._emp_cache[eid] = self._get_emp_name_fields(e) or "Unknown"
+        except Exception:
+            pass
+
+    def _lookup_emp_name(self, emp_id: str) -> str:
+        """
+        Resolve name for emp_id:
+        1. Check cache first
+        2. Firestore employees/{emp_id} document
+        3. Firestore employees query by employee_id field
+        Returns name string or empty string if not found.
+        """
+        # 1. Cache hit
+        cached = self._emp_cache.get(emp_id, "")
+        if cached and cached != "Unknown":
+            return cached
+
+        # 2. Direct document lookup
+        try:
+            doc = self.db.collection("employees").document(emp_id).get()
+            if doc.exists:
+                name = self._get_emp_name_fields(doc.to_dict())
+                if name:
+                    self._emp_cache[emp_id] = name
+                    return name
+        except Exception:
+            pass
+
+        # 3. Query by employee_id field (in case doc ID != employee_id)
+        try:
+            results = self.db.collection("employees") \
+                .where("employee_id", "==", emp_id).limit(1).stream()
+            for doc in results:
+                name = self._get_emp_name_fields(doc.to_dict())
+                if name:
+                    self._emp_cache[emp_id] = name
+                    return name
+        except Exception:
+            pass
+
+        return ""
 
     # ────────────────── WEBCAM SCANNER ──────────────────────
     def _start_camera(self):
@@ -266,21 +322,13 @@ class SecurityModule:
         emp_id = emp_id.strip().upper()
         if not emp_id:
             return
-        name = self._emp_cache.get(emp_id, "")
+
+        # Resolve employee name (multi-step lookup)
+        name = self._lookup_emp_name(emp_id)
         if not name:
-            # Try fetching from Firestore
-            try:
-                doc = self.db.collection("employees").document(emp_id).get()
-                if doc.exists:
-                    name = doc.to_dict().get("name", "Unknown")
-                    self._emp_cache[emp_id] = name
-                else:
-                    self.manual_status.config(
-                        text=f"❌ Employee '{emp_id}' not found.", fg="#e74c3c")
-                    return
-            except Exception as ex:
-                self.manual_status.config(text=f"Error: {ex}", fg="#e74c3c")
-                return
+            self.manual_status.config(
+                text=f"❌ Employee '{emp_id}' not found.", fg="#e74c3c")
+            return
 
         # Determine IN or OUT
         action = self._determine_action(emp_id)
@@ -292,6 +340,7 @@ class SecurityModule:
         try:
             self.db.collection("attendance_logs").add({
                 "employee_id": emp_id,
+                "name":        name,
                 "timestamp":   ts,
                 "action":      action,
                 "session":     1,
@@ -328,7 +377,7 @@ class SecurityModule:
         self._save_local_log(emp_id, name, action, tod, time_s, method)
 
     def _determine_action(self, emp_id: str) -> str:
-        """Check today’s logs: if last action was IN → OUT, else → IN."""
+        """Check today's logs: if last action was IN → OUT, else → IN."""
         tod = _today()
         try:
             logs = self.db.collection("attendance_logs") \
@@ -345,7 +394,7 @@ class SecurityModule:
 
     def _update_session(self, emp_id: str, date_str: str,
                         action: str, time_str: str):
-        """Update or create today’s session record."""
+        """Update or create today's session record."""
         doc_id  = f"{emp_id}_{date_str}"
         ref     = self.db.collection("sessions").document(doc_id)
         existing = ref.get()
@@ -394,22 +443,16 @@ class SecurityModule:
             return
         if force:
             # Directly write forced action
-            name = self._emp_cache.get(emp_id, "")
+            name = self._lookup_emp_name(emp_id)
             if not name:
-                try:
-                    doc = self.db.collection("employees").document(emp_id).get()
-                    if doc.exists:
-                        name = doc.to_dict().get("name", "")
-                    else:
-                        self.manual_status.config(
-                            text=f"❌ '{emp_id}' not found.", fg="#e74c3c")
-                        return
-                except Exception as ex:
-                    self.manual_status.config(text=str(ex), fg="#e74c3c"); return
+                self.manual_status.config(
+                    text=f"❌ '{emp_id}' not found.", fg="#e74c3c")
+                return
             ts = datetime.now().isoformat()
             try:
                 self.db.collection("attendance_logs").add({
                     "employee_id": emp_id,
+                    "name":        name,
                     "timestamp":   ts,
                     "action":      force,
                     "session":     1,
@@ -422,7 +465,7 @@ class SecurityModule:
                 self._save_local_log(emp_id, name, force, _today(), _now_str(), "MANUAL_FORCE")
             colour = "#00cc66" if force == "IN" else "#ff6644"
             self.manual_status.config(
-                text=f"✔ {emp_id} — Force {force} at {_now_str()}", fg=colour)
+                text=f"✔ {emp_id} — {force} at {_now_str()}", fg=colour)
             self.log_tree.insert("", 0,
                 values=(_now_str(), emp_id, name, force, "MANUAL_FORCE"),
                 tags=("in" if force == "IN" else "out",))
@@ -442,8 +485,14 @@ class SecurityModule:
             for doc in docs:
                 lg     = doc.to_dict()
                 ts     = str(lg.get("timestamp", ""))
-                emp_id = lg.get("employee_id", "")
-                name   = self._emp_cache.get(emp_id, "")
+                emp_id = lg.get("employee_id", "").strip().upper()
+                # Fix: try name stored in the log doc first, then cache, then live lookup
+                name = (
+                    lg.get("name", "").strip()
+                    or self._emp_cache.get(emp_id, "")
+                    or self._lookup_emp_name(emp_id)
+                    or emp_id   # last resort: show emp_id so row is never blank
+                )
                 action = lg.get("action", "")
                 method = lg.get("method", "APP")
                 self.log_tree.insert("", "end",
@@ -451,7 +500,7 @@ class SecurityModule:
                     tags=("in" if action == "IN" else "out",))
                 count += 1
             self.log_count_lbl.config(
-                text=f"Today’s scans: {count}  |  {tod}")
+                text=f"Today's scans: {count}  |  {tod}")
         except Exception as e:
             self.log_count_lbl.config(text=f"Error loading logs: {e}")
 
