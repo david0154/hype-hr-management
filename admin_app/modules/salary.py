@@ -77,11 +77,9 @@ def calculate_bonus(base_salary, absent_days, working_days=WORKING_DAYS):
 def calculate_salary(employee, month_sessions, month, year, working_days=None):
     """
     Core calculation — used by both overview panel and month-end bulk generator.
-    FIX: working_days now defaults to actual calendar working days (excl. Sundays)
-    instead of the old hardcoded 26.
+    working_days defaults to actual calendar working days (excl. Sundays).
     """
     if working_days is None:
-        # Prefer setting from app config; fall back to actual calendar days
         cfg_days = int(get_app_settings().get("working_days", 0))
         working_days = cfg_days if cfg_days > 0 else get_actual_working_days(year, month)
 
@@ -101,17 +99,18 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
         elif ot == "half": ot_half += 1
 
     paid_sundays = _count_paid_sundays(employee["employee_id"], month, year, sessions_map)
-    absent_days  = max(0, working_days - full_days - half_days * 0.5)
 
-    # FIX: cap att_ratio at 1.0 — attendance salary must never exceed base salary
+    # FIX: absent_days must subtract paid_sundays — they are not absent
+    absent_days  = max(0, working_days - full_days - half_days * 0.5 - paid_sundays)
+
+    # Cap att_ratio at 1.0 — attendance salary must never exceed base salary
     att_ratio  = min(1.0, (full_days + half_days * 0.5 + paid_sundays) / working_days) if working_days else 0
     att_salary = round(base_salary * att_ratio, 2)
 
     ot_units   = ot_full + ot_half * 0.5
     daily_rate = base_salary / working_days if working_days else 0
     ot_rate    = float(get_app_settings().get("ot_multiplier", OT_MULTIPLIER))
-    # FIX: OT pay = (daily_rate / 8h) * ot_hours * multiplier  — consistent with Android side
-    ot_hours   = ot_full * 7.0 + ot_half * 4.0   # default hours if duty_hours not stored
+    ot_hours   = ot_full * 7.0 + ot_half * 4.0
     ot_pay     = round((daily_rate / 8.0) * ot_hours * ot_rate, 2) if daily_rate else 0.0
 
     annual_bonus   = 0.0
@@ -121,9 +120,8 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
         if bonus_eligible:
             annual_bonus = calculate_bonus(base_salary, absent_days, working_days)
 
-    # FIX: partial advance deduction — only deduct up to gross (avoid negative net)
     gross        = att_salary + ot_pay + annual_bonus
-    deduct_adv   = min(advance, gross)            # never go below 0
+    deduct_adv   = min(advance, gross)
     final_salary = round(gross - deduct_adv, 2)
 
     return {
@@ -157,32 +155,28 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
 
 def _count_paid_sundays(employee_id, month, year, sessions_map):
     """
-    Sunday is paid only if the surrounding Saturday AND Monday are both present.
+    Sunday is paid ONLY if BOTH the surrounding Saturday AND Monday are present.
     Rules:
       - Saturday present AND Monday present  → full Sunday paid (1.0)
-      - Saturday present BUT Monday absent   → half Sunday paid (0.5)
-      - Saturday absent                      → Sunday not paid (0.0)
+      - Any other combination               → Sunday NOT paid (0.0)
 
-    FIX: When the last Sunday of the month has its Monday in the NEXT month
-    (e.g. May 25 Sun → June 1 Mon), the old code found mon_d = None and
-    fell into the 0.5 branch even when Monday was present. Now we
-    explicitly compute the next-month Monday date and check sessions_map.
+    FIX: Removed the 0.5 half-Sunday rule — it was inflating paid_sundays
+    and causing salary to exceed base salary.
+    FIX: Monday for the last Sunday of the month is resolved into next month.
     """
     paid = 0.0
     cal  = calendar.monthcalendar(year, month)
     for week_idx, week in enumerate(cal):
-        if week[6] == 0:          # no Sunday this row
+        if week[6] == 0:
             continue
         sat_n = week[5]
         sat_d = date(year, month, sat_n) if sat_n != 0 else None
 
-        # ── FIX: resolve Monday even when it falls in the next month ──
+        # Resolve Monday — may fall in next month
         mon_d = None
         if week_idx + 1 < len(cal) and cal[week_idx + 1][0] != 0:
-            # Monday is within the same month
             mon_d = date(year, month, cal[week_idx + 1][0])
         else:
-            # Last Sunday of the month — Monday is the 1st of next month
             next_month = month % 12 + 1
             next_year  = year + 1 if month == 12 else year
             mon_d = date(next_year, next_month, 1)
@@ -192,8 +186,10 @@ def _count_paid_sundays(employee_id, month, year, sessions_map):
         mon_ok = mon_d and sessions_map.get(
             mon_d.isoformat(), {}).get("duty_status") in ("full", "half")
 
-        if sat_ok and mon_ok:       paid += 1.0
-        elif sat_ok and not mon_ok: paid += 0.5
+        # ONLY pay Sunday if BOTH Saturday AND Monday are present
+        if sat_ok and mon_ok:
+            paid += 1.0
+        # Removed: elif sat_ok and not mon_ok: paid += 0.5
     return paid
 
 
@@ -356,12 +352,10 @@ class SalaryPanel(tk.Frame):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
 
-        # Tab 1 — Monthly overview (per-employee live preview)
         tab1 = tk.Frame(nb, bg="#0d1b2a")
         nb.add(tab1, text="  💰 Monthly Overview  ")
         self._build_overview(tab1)
 
-        # Tab 2 — Bulk month-end generation + PDF + export
         from modules.salary_monthend import MonthEndPanel
         tab2 = MonthEndPanel(nb, role=self.role)
         nb.add(tab2, text="  📅 Month-End Generate & Export  ")
@@ -429,22 +423,18 @@ class SalaryPanel(tk.Frame):
         self.tree.bind("<Double-1>", self._on_double)
         self._load()
 
-    # ── Load (base data only, fast) ──────────────────────────────────────────
     def _load(self):
-        # Clear all existing items
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
         employees = read_all("employees", "status", "active")
         self.employees = {e["employee_id"]: e for e in employees}
-        self._calc_cache = {}     # clear previous preview cache
+        self._calc_cache = {}
         bonus_config = read("settings", "bonus_dates") or {}
         for e in employees:
             rel  = e.get("religion", "Other").lower()
             conf = bonus_config.get(rel, {})
             bonus_month = conf.get("month", "—") if conf.get("enabled") else "—"
             emp_id = e["employee_id"]
-            # Skip if item already exists
             if emp_id not in self.tree.get_children():
                 self.tree.insert("", "end", iid=emp_id, values=(
                     emp_id,
@@ -458,7 +448,6 @@ class SalaryPanel(tk.Frame):
                     "Pending",
                 ))
 
-    # ── Load + calculate all (slower, fires on "Load" button) ────────────────
     def _load_with_calc(self):
         try:
             month = int(self.month_var.get())
@@ -466,7 +455,7 @@ class SalaryPanel(tk.Frame):
         except ValueError:
             messagebox.showerror("Error", "Invalid month/year."); return
 
-        self._load()    # reset rows first
+        self._load()
         self._calc_cache = {}
         month_str = f"{year}-{month:02d}"
 
@@ -491,7 +480,6 @@ class SalaryPanel(tk.Frame):
             except Exception as ex:
                 print(f"[SalaryPanel.load_calc] {emp_id}: {ex}")
 
-    # ── Double-click → detail popup ─────────────────────────────────────────
     def _on_double(self, _e):
         emp = self._selected_employee()
         if not emp: return
@@ -499,10 +487,8 @@ class SalaryPanel(tk.Frame):
         if result:
             SalaryDetailPopup(self, result)
         else:
-            # Not yet calculated — open advance panel instead
             AdvancePanel(self, emp)
 
-    # ── Preview salary for selected row ─────────────────────────────────────
     def _preview_salary(self):
         emp = self._selected_employee()
         if not emp: return
@@ -519,7 +505,6 @@ class SalaryPanel(tk.Frame):
         self._calc_cache[emp["employee_id"]] = result
         SalaryDetailPopup(self, result)
 
-    # ── Export visible results to CSV ────────────────────────────────────────
     def _export_csv(self):
         if not getattr(self, "_calc_cache", {}):
             messagebox.showwarning("No Data",
@@ -555,7 +540,6 @@ class SalaryPanel(tk.Frame):
         emp = self._selected_employee()
         if emp: AdvancePanel(self, emp)
 
-    # ── Salary Raise dialog ──────────────────────────────────────────────────
     def _salary_raise(self):
         emp = self._selected_employee()
         if not emp: return

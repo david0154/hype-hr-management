@@ -2,6 +2,7 @@
 Attendance Module — Hype HR Management
 Features:
   - View all attendance logs (filterable by employee ID / date)
+  - Full Month View — calendar grid showing ALL days, absent days included
   - Manual Mark: Mark Present (Full/Half) or Absent for any employee
   - Edit existing session: change duty_status / ot_status
   - Delete log entry (Super Admin / Admin only)
@@ -12,6 +13,10 @@ FIX: Raw logs show IST time + parsed location name.
 FIX: Employee name resolved from multiple field names + live Firestore fallback.
 FIX: QR scan check-in/out — _sync_duty_from_times() recomputes duty_status
      from in_time/out_time whenever a session is saved or refreshed.
+FIX: Second QR scan after checkout → writes ot_in_time, triggers OT mode.
+FIX: Third QR scan (after OT check-in) → writes ot_out_time, computes ot_hours/ot_status.
+FIX: duty_hours auto-computed in list view if field missing in Firestore doc.
+FIX: Full Month View fills missing dates as Absent or Sunday.
      Paid holidays: sessions flagged is_holiday=True count toward paid days.
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
@@ -22,6 +27,7 @@ from utils.firebase_config import get_db
 from utils.db import read_all, write, update
 from modules.roles import has_permission
 import json
+import calendar as cal_module
 
 try:
     from google.cloud.firestore_v1.base_query import FieldFilter
@@ -35,7 +41,6 @@ IST          = timezone(timedelta(hours=5, minutes=30))
 
 
 def _ff(col_ref, field, op, val):
-    """Safe Firestore .where() using FieldFilter keyword — suppresses UserWarning."""
     if _HAS_FF:
         return col_ref.where(filter=FieldFilter(field, op, val))
     return col_ref.where(field, op, val)
@@ -55,7 +60,7 @@ def classify_ot(hours: float) -> str:
 
 def _to_ist_hhmm(ts_value) -> str:
     try:
-    	if hasattr(ts_value, 'tzinfo') and ts_value.tzinfo:
+        if hasattr(ts_value, 'tzinfo') and ts_value.tzinfo:
             return ts_value.astimezone(IST).strftime("%H:%M")
         if hasattr(ts_value, 'seconds'):
             return datetime.fromtimestamp(ts_value.seconds, tz=IST).strftime("%H:%M")
@@ -119,7 +124,6 @@ def _find_employee_by_id(db, emp_id: str):
 
 
 def _hhmm_to_float(hhmm: str) -> float:
-    """Convert 'HH:MM' string to decimal hours. Returns 0.0 on error."""
     try:
         parts = hhmm.strip().split(":")
         return int(parts[0]) + int(parts[1]) / 60.0
@@ -129,27 +133,19 @@ def _hhmm_to_float(hhmm: str) -> float:
 
 def _sync_duty_from_times(db, doc_id: str, session_data: dict) -> dict:
     """
-    Recompute and write duty_status + duty_hours to a sessions doc
-    based on in_time and out_time fields.
-
-    Called after every QR-based IN/OUT write and after manual edits.
-    Also handles paid holidays: if is_holiday=True, duty_status is set
-    to 'full' regardless of hours so the employee gets paid for the holiday.
-
-    Returns the updated session_data dict.
+    Recompute duty_status + duty_hours from in_time/out_time.
+    OT: if ot_in_time exists, compute ot_hours from ot_in_time/ot_out_time.
+    Handles paid holidays (is_holiday=True → always full day).
     """
     in_t  = session_data.get("in_time",  "")
     out_t = session_data.get("out_time", "")
     is_holiday = session_data.get("is_holiday", False)
 
     if is_holiday:
-        # Paid holiday — always mark as full day present
         session_data["duty_status"] = "full"
         session_data["duty_hours"]  = session_data.get("duty_hours", 8.0)
         try:
-            db.collection("sessions").document(doc_id).update({
-                "duty_status": "full",
-            })
+            db.collection("sessions").document(doc_id).update({"duty_status": "full"})
         except Exception:
             pass
         return session_data
@@ -159,9 +155,9 @@ def _sync_duty_from_times(db, doc_id: str, session_data: dict) -> dict:
         out_f = _hhmm_to_float(str(out_t)[:5])
         hours = out_f - in_f
         if hours < 0:
-            hours += 24  # overnight shift
+            hours += 24
         duty = classify_duty(hours)
-        # OT hours (ot_in_time → ot_out_time)
+
         ot_in  = session_data.get("ot_in_time",  "")
         ot_out = session_data.get("ot_out_time", "")
         ot_hours = 0.0
@@ -169,7 +165,10 @@ def _sync_duty_from_times(db, doc_id: str, session_data: dict) -> dict:
             ot_hours = _hhmm_to_float(str(ot_out)[:5]) - _hhmm_to_float(str(ot_in)[:5])
             if ot_hours < 0:
                 ot_hours += 24
-        ot_status = classify_ot(ot_hours)
+        elif ot_in and not ot_out:
+            # OT started but not finished yet — keep ot_status as pending
+            ot_hours = 0.0
+        ot_status = classify_ot(ot_hours) if (ot_in and ot_out) else session_data.get("ot_status", "none")
 
         session_data["duty_status"] = duty
         session_data["duty_hours"]  = round(hours, 2)
@@ -185,11 +184,77 @@ def _sync_duty_from_times(db, doc_id: str, session_data: dict) -> dict:
         except Exception:
             pass
     elif in_t and not out_t:
-        # Checked in but not yet checked out — keep as absent until OUT arrives
         if not session_data.get("duty_status"):
             session_data["duty_status"] = "absent"
 
     return session_data
+
+
+def handle_qr_scan(db, emp_id: str, scan_time_ist: str, scan_date: str,
+                   location: str = "") -> str:
+    """
+    Central QR scan handler — called by Android PHP backend or local test.
+    State machine per session doc:
+
+      No doc / duty_status absent + no in_time  → CHECK IN   (write in_time)
+      Has in_time, no out_time                  → CHECK OUT  (write out_time, compute duty)
+      Has in_time + out_time, no ot_in_time     → OT CHECK IN  (write ot_in_time)
+      Has ot_in_time, no ot_out_time            → OT CHECK OUT (write ot_out_time, compute OT)
+
+    Returns a status string describing what happened.
+    """
+    doc_id = f"{emp_id}_{scan_date}"
+    ref    = db.collection("sessions").document(doc_id)
+    doc    = ref.get()
+
+    if not doc.exists:
+        # First scan of the day — CHECK IN
+        _, emp = _find_employee_by_id(db, emp_id)
+        emp_name = _extract_name_from_doc(emp) if emp else emp_id
+        ref.set({
+            "employee_id":   emp_id,
+            "employee_name": emp_name,
+            "name":          emp_name,
+            "date":          scan_date,
+            "in_time":       scan_time_ist,
+            "out_time":      "",
+            "ot_in_time":    "",
+            "ot_out_time":   "",
+            "duty_status":   "absent",
+            "ot_status":     "none",
+            "duty_hours":    0.0,
+            "ot_hours":      0.0,
+            "location":      location,
+            "source":        "qr",
+        })
+        return f"CHECK IN at {scan_time_ist}"
+
+    d = doc.to_dict()
+    in_t    = d.get("in_time",    "")
+    out_t   = d.get("out_time",   "")
+    ot_in   = d.get("ot_in_time", "")
+    ot_out  = d.get("ot_out_time","")
+
+    if in_t and not out_t:
+        # Second scan — CHECK OUT
+        ref.update({"out_time": scan_time_ist})
+        d["out_time"] = scan_time_ist
+        _sync_duty_from_times(db, doc_id, d)
+        return f"CHECK OUT at {scan_time_ist}"
+
+    if in_t and out_t and not ot_in:
+        # Third scan — OT CHECK IN
+        ref.update({"ot_in_time": scan_time_ist})
+        return f"OT CHECK IN at {scan_time_ist}"
+
+    if in_t and out_t and ot_in and not ot_out:
+        # Fourth scan — OT CHECK OUT
+        ref.update({"ot_out_time": scan_time_ist})
+        d["ot_out_time"] = scan_time_ist
+        _sync_duty_from_times(db, doc_id, d)
+        return f"OT CHECK OUT at {scan_time_ist}"
+
+    return "All scans already completed for today"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -199,7 +264,7 @@ class AttendanceModule:
         self.current_user = current_user
         self.role         = current_user.get("role", "manager")
         self.db           = get_db()
-        self._emp_name_cache = {}   # emp_id -> name  (avoids repeated Firestore lookups)
+        self._emp_name_cache = {}
         self._build_ui()
         self._load_logs()
 
@@ -232,11 +297,15 @@ class AttendanceModule:
                   bg="#555", fg="white", font=("Arial", 9),
                   relief="flat", padx=8, pady=4,
                   command=self._load_logs).pack(side="right", padx=4)
-        # Sync button — re-run duty calc on all loaded sessions
         tk.Button(top, text="\U0001f501 Sync Duty",
                   bg="#7d3c98", fg="white", font=("Arial", 9),
                   relief="flat", padx=8, pady=4,
                   command=self._sync_all_duty).pack(side="right", padx=4)
+        # Full Month View button
+        tk.Button(top, text="\U0001f4c6 Month View",
+                  bg="#1a6b3a", fg="white", font=("Arial", 9),
+                  relief="flat", padx=8, pady=4,
+                  command=self._show_full_month_view).pack(side="right", padx=4)
 
         # ---- Filter bar ----
         ff = tk.Frame(self.parent, bg="#0d1b2a")
@@ -255,13 +324,13 @@ class AttendanceModule:
                   padx=8, command=self._clear_filter).pack(side="left", padx=2)
 
         # ---- Treeview ----
-        cols = ("emp_id", "name", "date", "duty", "ot", "in_t", "out_t", "hours", "location", "doc_id")
+        cols = ("emp_id", "name", "date", "duty", "ot", "in_t", "out_t", "hours", "ot_hours", "location", "doc_id")
         self.tree = ttk.Treeview(self.parent, columns=cols, show="headings", height=22)
         widths = {"emp_id": 90, "name": 140, "date": 100, "duty": 80, "ot": 70,
-                  "in_t": 70, "out_t": 70, "hours": 65, "location": 160, "doc_id": 0}
+                  "in_t": 70, "out_t": 70, "hours": 65, "ot_hours": 65, "location": 150, "doc_id": 0}
         labels = {"emp_id": "Emp ID", "name": "Name", "date": "Date",
                   "duty": "Duty", "ot": "OT", "in_t": "IN", "out_t": "OUT",
-                  "hours": "Hours", "location": "Location", "doc_id": ""}
+                  "hours": "Hours", "ot_hours": "OT Hrs", "location": "Location", "doc_id": ""}
         for c in cols:
             self.tree.heading(c, text=labels[c])
             self.tree.column(c, width=widths[c], minwidth=0 if c == "doc_id" else 40)
@@ -275,6 +344,8 @@ class AttendanceModule:
         self.tree.tag_configure("half",     foreground="#f0c040")
         self.tree.tag_configure("absent",   foreground="#e74c3c")
         self.tree.tag_configure("holiday",  foreground="#3498db")
+        self.tree.tag_configure("sunday",   foreground="#888888")
+        self.tree.tag_configure("ot",       foreground="#ff9944")
 
     # ──────────────────── NAME RESOLVER ───────────────────────────────────────
     def _resolve_name(self, emp_id: str, session_doc: dict) -> str:
@@ -306,7 +377,6 @@ class AttendanceModule:
         except Exception as ex:
             messagebox.showerror("Error", str(ex)); return
 
-        # Fallback to attendance_logs collection
         if not docs:
             try:
                 q2 = self.db.collection("attendance_logs")
@@ -321,13 +391,12 @@ class AttendanceModule:
             emp_id  = d.get("employee_id", "").strip().upper()
             name    = self._resolve_name(emp_id, d)
             dt      = d.get("date", "")
-            # FIX: recompute duty_status live if in_time + out_time present
-            # but duty_status is still 'absent' (QR scan wrote absent as default)
             in_t_raw  = d.get("in_time",  "")
             out_t_raw = d.get("out_time", "")
             duty      = d.get("duty_status", d.get("status", ""))
-            if in_t_raw and out_t_raw and duty == "absent":
-                # Silently recompute without blocking the UI
+
+            # Auto-recompute duty_status if still 'absent' but times are present
+            if in_t_raw and out_t_raw and duty in ("absent", "", None):
                 in_f  = _hhmm_to_float(str(in_t_raw)[:5])
                 out_f = _hhmm_to_float(str(out_t_raw)[:5])
                 hours = out_f - in_f
@@ -336,18 +405,38 @@ class AttendanceModule:
 
             is_holiday = d.get("is_holiday", False)
             if is_holiday:
-                duty = "full"  # Paid holiday — always full
+                duty = "full"
 
             ot      = d.get("ot_status", "")
             in_t    = _to_ist_hhmm(d.get("in_time", ""))  if d.get("in_time")  else "\u2014"
             out_t   = _to_ist_hhmm(d.get("out_time", "")) if d.get("out_time") else "\u2014"
-            hours   = d.get("duty_hours", "")
-            loc     = _parse_location(d.get("location", d.get("check_in_location", "")))
+
+            # FIX: compute duty_hours from times if field is missing
+            hours = d.get("duty_hours", "")
+            if not hours and in_t_raw and out_t_raw:
+                in_f  = _hhmm_to_float(str(in_t_raw)[:5])
+                out_f = _hhmm_to_float(str(out_t_raw)[:5])
+                computed = out_f - in_f
+                if computed < 0: computed += 24
+                hours = round(computed, 2)
+
+            # OT hours display
+            ot_hrs = d.get("ot_hours", "")
+            ot_in_raw  = d.get("ot_in_time",  "")
+            ot_out_raw = d.get("ot_out_time", "")
+            if not ot_hrs and ot_in_raw and ot_out_raw:
+                ot_f_in  = _hhmm_to_float(str(ot_in_raw)[:5])
+                ot_f_out = _hhmm_to_float(str(ot_out_raw)[:5])
+                ot_computed = ot_f_out - ot_f_in
+                if ot_computed < 0: ot_computed += 24
+                ot_hrs = round(ot_computed, 2)
+
+            loc = _parse_location(d.get("location", d.get("check_in_location", "")))
 
             if is_holiday:
                 tag = "holiday"
             elif duty == "full":
-                tag = "present"
+                tag = "ot" if ot and ot != "none" else "present"
             elif duty == "half":
                 tag = "half"
             else:
@@ -359,6 +448,7 @@ class AttendanceModule:
                 ot.title()   if ot   else "\u2014",
                 in_t, out_t,
                 f"{float(hours):.1f}h" if hours else "\u2014",
+                f"{float(ot_hrs):.1f}h" if ot_hrs else "\u2014",
                 loc, doc.id,
             ), tags=(tag,))
 
@@ -373,16 +463,222 @@ class AttendanceModule:
         self.filter_date.set("")
         self._load_logs()
 
+    # ──────────────────── FULL MONTH VIEW ────────────────────────────────────
+    def _show_full_month_view(self):
+        """
+        Opens a popup showing ALL calendar days for the given employee & month.
+        Missing session docs are shown as Absent (or Sunday label for Sundays).
+        """
+        emp_id = self.filter_emp.get().strip().upper()
+        if not emp_id:
+            messagebox.showwarning("Employee Required",
+                "Enter an Employee ID in the filter box first, then click Month View."); return
+
+        # Determine month/year from filter_date or default to current month
+        date_str = self.filter_date.get().strip()
+        try:
+            if date_str and len(date_str) >= 7:
+                year  = int(date_str[:4])
+                month = int(date_str[5:7])
+            else:
+                today = date.today()
+                year, month = today.year, today.month
+        except Exception:
+            today = date.today()
+            year, month = today.year, today.month
+
+        _, days_in_month = cal_module.monthrange(year, month)
+        all_dates = [date(year, month, d).isoformat() for d in range(1, days_in_month + 1)]
+
+        # Fetch all sessions for employee in this month
+        month_str = f"{year}-{month:02d}"
+        try:
+            docs = list(
+                _ff(self.db.collection("sessions"), "employee_id", "==", emp_id)
+                .stream()
+            )
+            sessions_map = {
+                doc.to_dict().get("date", ""): doc.to_dict()
+                for doc in docs
+                if doc.to_dict().get("date", "").startswith(month_str)
+            }
+        except Exception as ex:
+            messagebox.showerror("Error", str(ex)); return
+
+        # Resolve employee name
+        _, emp = _find_employee_by_id(self.db, emp_id)
+        emp_name = _extract_name_from_doc(emp) if emp else emp_id
+
+        # ── Build popup window ──
+        dlg = tk.Toplevel(self.parent)
+        dlg.title(f"\U0001f4c6 Full Month View — {emp_name} ({emp_id})  "
+                  f"{cal_module.month_name[month]} {year}")
+        dlg.geometry("860x620")
+        dlg.configure(bg="#0d1b2a")
+        dlg.grab_set()
+
+        hdr = tk.Frame(dlg, bg="#1a2740", pady=8)
+        hdr.pack(fill="x")
+        tk.Label(hdr,
+                 text=f"\U0001f4c6  {emp_name} ({emp_id})  —  "
+                      f"{cal_module.month_name[month]} {year}",
+                 font=("Arial", 12, "bold"), bg="#1a2740", fg="#f0c040").pack(side="left", padx=12)
+
+        # Stats summary
+        stats_frm = tk.Frame(dlg, bg="#132030", pady=6)
+        stats_frm.pack(fill="x", padx=10, pady=4)
+        self._month_stats_lbl = tk.Label(stats_frm, text="",
+                                          bg="#132030", fg="#aaa", font=("Arial", 9))
+        self._month_stats_lbl.pack(anchor="w", padx=8)
+
+        cols = ("date", "day", "duty", "ot", "in_t", "out_t", "hours",
+                "ot_in", "ot_out", "ot_hrs", "location")
+        tree = ttk.Treeview(dlg, columns=cols, show="headings", height=26)
+        col_cfg = [
+            ("date",    "Date",      100),
+            ("day",     "Day",        70),
+            ("duty",    "Status",     90),
+            ("ot",      "OT",         70),
+            ("in_t",    "IN",         70),
+            ("out_t",   "OUT",        70),
+            ("hours",   "Work Hrs",   75),
+            ("ot_in",   "OT IN",      70),
+            ("ot_out",  "OT OUT",     70),
+            ("ot_hrs",  "OT Hrs",     70),
+            ("location","Location",  140),
+        ]
+        for cid, lbl, w in col_cfg:
+            tree.heading(cid, text=lbl)
+            tree.column(cid, width=w, anchor="center")
+
+        tree.tag_configure("present", foreground="#00cc66")
+        tree.tag_configure("half",    foreground="#f0c040")
+        tree.tag_configure("absent",  foreground="#e74c3c")
+        tree.tag_configure("sunday",  foreground="#555577")
+        tree.tag_configure("holiday", foreground="#3498db")
+        tree.tag_configure("ot",      foreground="#ff9944")
+
+        sb2 = ttk.Scrollbar(dlg, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb2.set)
+        tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
+        sb2.pack(side="right", fill="y", pady=6)
+
+        # ── Fill all dates ──
+        full_count = half_count = absent_count = sunday_count = 0
+        ot_count   = 0
+
+        for dt_str in all_dates:
+            dt_obj   = date.fromisoformat(dt_str)
+            weekday  = dt_obj.weekday()  # 0=Mon, 6=Sun
+            day_name = dt_obj.strftime("%A")
+            sess     = sessions_map.get(dt_str)
+
+            if sess:
+                is_holiday = sess.get("is_holiday", False)
+                duty       = sess.get("duty_status", "absent")
+                ot         = sess.get("ot_status", "none")
+
+                in_t_raw  = sess.get("in_time",  "")
+                out_t_raw = sess.get("out_time", "")
+
+                # Auto-compute duty if absent but times exist
+                if in_t_raw and out_t_raw and duty in ("absent", "", None):
+                    in_f  = _hhmm_to_float(str(in_t_raw)[:5])
+                    out_f = _hhmm_to_float(str(out_t_raw)[:5])
+                    h     = out_f - in_f
+                    if h < 0: h += 24
+                    duty = classify_duty(h)
+
+                if is_holiday:
+                    duty = "full"
+
+                in_t   = _to_ist_hhmm(in_t_raw)  if in_t_raw  else "\u2014"
+                out_t  = _to_ist_hhmm(out_t_raw) if out_t_raw else "\u2014"
+
+                # Work hours
+                hours = sess.get("duty_hours", "")
+                if not hours and in_t_raw and out_t_raw:
+                    in_f  = _hhmm_to_float(str(in_t_raw)[:5])
+                    out_f = _hhmm_to_float(str(out_t_raw)[:5])
+                    h     = out_f - in_f
+                    if h < 0: h += 24
+                    hours = round(h, 2)
+
+                # OT times
+                ot_in_raw  = sess.get("ot_in_time",  "")
+                ot_out_raw = sess.get("ot_out_time", "")
+                ot_in_str  = _to_ist_hhmm(ot_in_raw)  if ot_in_raw  else "\u2014"
+                ot_out_str = _to_ist_hhmm(ot_out_raw) if ot_out_raw else "\u2014"
+                ot_hrs = sess.get("ot_hours", "")
+                if not ot_hrs and ot_in_raw and ot_out_raw:
+                    ot_f_in  = _hhmm_to_float(str(ot_in_raw)[:5])
+                    ot_f_out = _hhmm_to_float(str(ot_out_raw)[:5])
+                    ot_h     = ot_f_out - ot_f_in
+                    if ot_h < 0: ot_h += 24
+                    ot_hrs = round(ot_h, 2)
+
+                loc = _parse_location(sess.get("location", ""))
+
+                if is_holiday:
+                    tag = "holiday"
+                elif duty == "full":
+                    tag = "ot" if ot and ot != "none" else "present"
+                    if ot and ot != "none": ot_count += 1
+                    full_count += 1
+                elif duty == "half":
+                    tag = "half"
+                    half_count += 1
+                else:
+                    tag = "absent"
+                    absent_count += 1
+
+                tree.insert("", "end", tags=(tag,), values=(
+                    dt_str, day_name,
+                    ("\U0001f389 Holiday" if is_holiday else duty.title()),
+                    ot.title() if ot else "\u2014",
+                    in_t, out_t,
+                    f"{float(hours):.1f}h" if hours else "\u2014",
+                    ot_in_str, ot_out_str,
+                    f"{float(ot_hrs):.1f}h" if ot_hrs else "\u2014",
+                    loc,
+                ))
+
+            else:
+                # No session doc for this date
+                if weekday == 6:  # Sunday
+                    sunday_count += 1
+                    tree.insert("", "end", tags=("sunday",), values=(
+                        dt_str, day_name, "Sunday",
+                        "\u2014", "\u2014", "\u2014", "\u2014",
+                        "\u2014", "\u2014", "\u2014", "",
+                    ))
+                else:
+                    absent_count += 1
+                    tree.insert("", "end", tags=("absent",), values=(
+                        dt_str, day_name, "Absent",
+                        "\u2014", "\u2014", "\u2014", "\u2014",
+                        "\u2014", "\u2014", "\u2014", "",
+                    ))
+
+        # Update summary
+        self._month_stats_lbl.config(
+            text=f"  \u2705 Full: {full_count}   "
+                 f"\U0001f7e1 Half: {half_count}   "
+                 f"\u274c Absent: {absent_count}   "
+                 f"\U0001f534 Sundays: {sunday_count}   "
+                 f"\U0001f7e0 OT Days: {ot_count}   "
+                 f"| Total Days in Month: {days_in_month}"
+        )
+
     # ──────────────────── SYNC ALL DUTY ─────────────────────────────────────
     def _sync_all_duty(self):
-        """Re-run _sync_duty_from_times on all currently displayed sessions."""
         children = self.tree.get_children()
         if not children:
             messagebox.showinfo("Sync", "No sessions loaded. Load first."); return
         synced = 0
         for iid in children:
             vals   = self.tree.item(iid)["values"]
-            doc_id = vals[9] if len(vals) > 9 else ""
+            doc_id = vals[10] if len(vals) > 10 else ""
             if not doc_id: continue
             try:
                 doc = self.db.collection("sessions").document(doc_id).get()
@@ -478,7 +774,6 @@ class AttendanceModule:
                     f"No employee found with ID: {eid}", parent=dlg)
                 return
             emp_name = _extract_name_from_doc(emp)
-            # Auto-compute duty_hours and duty_status from times if provided
             duty_hours = 0.0
             if in_t and out_t:
                 try:
@@ -486,7 +781,7 @@ class AttendanceModule:
                     out_f = _hhmm_to_float(out_t)
                     duty_hours = out_f - in_f
                     if duty_hours < 0: duty_hours += 24
-                    duty = classify_duty(duty_hours)  # auto-set from hours
+                    duty = classify_duty(duty_hours)
                 except Exception:
                     pass
 
@@ -500,7 +795,10 @@ class AttendanceModule:
                 "ot_status":     ot,
                 "in_time":       in_t,
                 "out_time":      out_t,
+                "ot_in_time":    "",
+                "ot_out_time":   "",
                 "duty_hours":    round(duty_hours, 2),
+                "ot_hours":      0.0,
                 "marked_by":     self.current_user.get("employee_id", "admin"),
                 "marked_at":     datetime.now(IST).isoformat(),
                 "source":        "manual",
@@ -590,7 +888,10 @@ class AttendanceModule:
                 "ot_status":     "none",
                 "in_time":       "",
                 "out_time":      "",
+                "ot_in_time":    "",
+                "ot_out_time":   "",
                 "duty_hours":    0.0,
+                "ot_hours":      0.0,
                 "marked_by":     self.current_user.get("employee_id", "admin"),
                 "marked_at":     datetime.now(IST).isoformat(),
                 "source":        "manual",
@@ -614,12 +915,11 @@ class AttendanceModule:
         if not sel:
             messagebox.showinfo("Select", "Select a session row to edit."); return
         vals   = self.tree.item(sel[0])["values"]
-        doc_id = vals[9] if len(vals) > 9 else ""
+        doc_id = vals[10] if len(vals) > 10 else ""
         emp_id = vals[0]
         dt     = vals[2]
         duty   = vals[3].lower() if vals[3] else "absent"
         ot     = vals[4].lower() if vals[4] else "none"
-        # Strip emoji if present
         for s in DUTY_OPTIONS:
             if s in duty: duty = s; break
 
@@ -674,7 +974,7 @@ class AttendanceModule:
         if not sel:
             messagebox.showinfo("Select", "Select a session row to delete."); return
         vals   = self.tree.item(sel[0])["values"]
-        doc_id = vals[9] if len(vals) > 9 else ""
+        doc_id = vals[10] if len(vals) > 10 else ""
         emp_id = vals[0]
         dt     = vals[2]
         if not doc_id:
