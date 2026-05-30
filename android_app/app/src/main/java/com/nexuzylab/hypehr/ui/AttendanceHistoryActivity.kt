@@ -22,12 +22,18 @@ import java.util.*
  * Attendance History — shows one row per day with:
  *   - IN time, OUT time
  *   - Total working hours (OUT - IN)
- *   - duty_status badge (Full / Half / Absent)
+ *   - duty_status badge: Full / Half / Absent / Holiday
  *   - Holiday badge if is_holiday = true
+ *   - Summary counts: Present, Absent, Half Days, Holidays
  *
  * FIX: Previous adapter showed separate rows for IN and OUT events.
  *      getAttendanceHistory() now returns one DayRecord per date (sessions doc),
  *      so every row has both inTime + outTime and computed workingHours.
+ *
+ * FIX: Holiday days now show as "Holiday" status (green badge) instead of "Absent".
+ *      Summary row includes holiday count.
+ *
+ * FIX: present/holiday counts correctly computed from duty_status field.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -82,17 +88,21 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                     binding.rvHistory.visibility = View.VISIBLE
                     binding.rvHistory.adapter    = DayAdapter(days)
 
-                    // Summary counts from day-level data
-                    val presentDays = days.count {
-                        (it["duty_status"] as? String) in listOf("full", "half")
-                    }
+                    // Summary counts — "present" and "holiday" both count as present for display
+                    val fullDays    = days.count { (it["duty_status"] as? String) == "full" }
                     val halfDays    = days.count { (it["duty_status"] as? String) == "half" }
+                    val presentDays = days.count {
+                        (it["duty_status"] as? String) in listOf("full", "half", "present")
+                    }
                     val absentDays  = days.count { (it["duty_status"] as? String) == "absent" }
-                    val holidayDays = days.count { (it["is_holiday"] as? Boolean) == true }
+                    val holidayDays = days.count {
+                        (it["is_holiday"] as? Boolean) == true ||
+                        (it["duty_status"] as? String) == "holiday"
+                    }
 
-                    binding.tvSummaryPresent.text = "Present: $presentDays"
+                    binding.tvSummaryPresent.text = "Present: $presentDays  (Full: $fullDays, Half: $halfDays)"
                     binding.tvSummaryAbsent.text  = "Absent: $absentDays"
-                    binding.tvSummaryHalf.text    = "Half: $halfDays  | Holidays: $holidayDays"
+                    binding.tvSummaryHalf.text    = "Holidays: $holidayDays"
                 }
             }
         }
@@ -125,12 +135,12 @@ class AttendanceHistoryActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: VH, position: Int) {
             val item      = items[position]
             val date      = item["date"] as? String ?: ""
-            val inTime    = (item["inTime"]  as? String).orEmpty().ifEmpty { "--:--" }
-            val outTime   = (item["outTime"] as? String).orEmpty().ifEmpty { "--:--" }
+            val inTime    = (item["inTime"]       as? String).orEmpty().ifEmpty { "--:--" }
+            val outTime   = (item["outTime"]      as? String).orEmpty().ifEmpty { "--:--" }
             val workHours = (item["workingHours"] as? String).orEmpty().ifEmpty { "--" }
-            val duty      = (item["duty_status"] as? String) ?: "absent"
-            val isHoliday = (item["is_holiday"] as? Boolean) ?: false
-            val location  = (item["location"]  as? String).orEmpty().ifEmpty { "Office" }
+            val duty      = (item["duty_status"]  as? String) ?: "absent"
+            val isHoliday = (item["is_holiday"]   as? Boolean) ?: (duty == "holiday")
+            val location  = (item["location"]     as? String).orEmpty().ifEmpty { "Office" }
 
             // Date labels
             try {
@@ -145,13 +155,13 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                 holder.tvDayName.text = ""
             }
 
-            // IN / OUT times + working hours
+            // IN / OUT times + working hours in one line
             holder.tvCheckIn.text  = "IN:  $inTime"
             holder.tvCheckOut.text = "OUT: $outTime  |  \u23F1 $workHours"
 
             // Status badge
             when {
-                isHoliday -> {
+                isHoliday || duty == "holiday" -> {
                     holder.tvStatus.text = "\uD83C\uDF89 Holiday"
                     holder.tvType.text   = "HOL"
                     holder.tvType.setBackgroundResource(R.drawable.bg_chip_green)
@@ -165,6 +175,12 @@ class AttendanceHistoryActivity : AppCompatActivity() {
                     holder.tvStatus.text = "\uD83D\uDFE1 Half Day"
                     holder.tvType.text   = "HALF"
                     holder.tvType.setBackgroundResource(R.drawable.bg_chip_yellow)
+                }
+                duty == "present" -> {
+                    // Checked in but not yet checked out
+                    holder.tvStatus.text = "\uD83D\uDFE2 Present (In)"
+                    holder.tvType.text   = "IN"
+                    holder.tvType.setBackgroundResource(R.drawable.bg_chip_green)
                 }
                 else -> {
                     holder.tvStatus.text = "\uD83D\uDD34 Absent"

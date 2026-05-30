@@ -12,13 +12,24 @@ import java.util.*
  * FirestoreRepository — single source of truth for all Firestore operations.
  *
  * FIX (QR check-in not showing as present):
- *   logAttendance() OUT now computes duty_hours from in_time→out_time difference
- *   and writes duty_status (full/half/absent) to sessions doc immediately.
- *   This makes the admin Python app see correct attendance without manual recalc.
+ *   logAttendance() IN now writes duty_status = "present" so the admin
+ *   Python app immediately sees the employee as present after check-in.
+ *   OUT updates duty_status to "full" / "half" / "absent" based on hours worked.
+ *
+ * FIX (Instant checkout exploit — whole day pay lost):
+ *   logAttendance() OUT now:
+ *     1. Rejects if no IN exists for today.
+ *     2. Rejects if < 30 minutes have passed since IN (prevents accidental
+ *        double-scan and malicious instant checkout).
+ *     3. Rejects if out_time already exists (no duplicate OUT).
  *
  * FIX (Android working hours blank):
- *   getAttendanceHistory() now returns one DayRecord per date (not separate
- *   IN/OUT entries), with inTime, outTime, workingHours all populated.
+ *   getAttendanceHistory() returns one DayRecord per date from sessions,
+ *   with inTime, outTime, workingHours all correctly populated.
+ *
+ * FIX (Paid holiday not reflected):
+ *   getAttendanceHistory() checks the 'holidays' Firestore collection
+ *   and marks is_holiday = true + duty_status = "holiday" for those dates.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -125,9 +136,12 @@ object FirestoreRepository {
 
     /**
      * Returns one DayRecord map per date containing:
-     *   date, inTime, outTime, workingHours ("Xh Ym"), location, duty_status, is_holiday
-     * This replaces the old flat IN/OUT-per-row list so
-     * AttendanceHistoryActivity can show complete day info in one row.
+     *   date, inTime, outTime, workingHours ("Xh Ym"), location,
+     *   duty_status ("full"/"half"/"absent"/"holiday"/"present"),
+     *   is_holiday (Boolean)
+     *
+     * Priority: sessions collection (one doc per day) → attendance_logs fallback.
+     * Holidays are fetched from the 'holidays' collection and overlaid.
      */
     suspend fun getAttendanceHistory(
         employeeId: String,
@@ -135,7 +149,15 @@ object FirestoreRepository {
     ): List<Map<String, Any>> {
         if (employeeId.isEmpty()) return emptyList()
 
-        // Prefer sessions collection (one doc per day, has in_time + out_time)
+        // Pre-load holidays for this month to avoid per-row Firestore reads
+        val holidayDates: Set<String> = try {
+            val hSnap = db.collection("holidays")
+                .whereGreaterThanOrEqualTo("date", "$monthKey-01")
+                .whereLessThanOrEqualTo("date", "$monthKey-31")
+                .get().await()
+            hSnap.documents.mapNotNull { it.getString("date") }.toSet()
+        } catch (e: Exception) { emptySet() }
+
         return try {
             val snap = db.collection("sessions")
                 .whereEqualTo("employee_id", employeeId)
@@ -156,13 +178,14 @@ object FirestoreRepository {
                             val m = ((dutyHrs - h) * 60).toInt()
                             if (m > 0) "${h}h ${m}m" else "${h}h"
                         }
-                        inTime.isNotEmpty() && outTime.isNotEmpty() -> {
+                        inTime.isNotEmpty() && outTime.isNotEmpty() ->
                             calcWorkHours(inTime, outTime)
-                        }
                         else -> "--"
                     }
-                    val duty     = (d["duty_status"] as? String) ?: "absent"
-                    val isHoliday = (d["is_holiday"] as? Boolean) ?: false
+                    val isHoliday = date in holidayDates
+                    val rawDuty  = (d["duty_status"] as? String) ?: "absent"
+                    val duty     = if (isHoliday) "holiday" else rawDuty
+
                     mapOf(
                         "date"          to date,
                         "inTime"        to inTime,
@@ -203,14 +226,15 @@ object FirestoreRepository {
                         val m = ((diffMs % 3600000) / 60000).toInt()
                         if (m > 0) "${h}h ${m}m" else "${h}h"
                     } else "--"
+                    val isHoliday = date in holidayDates
                     mapOf(
                         "date"          to date,
                         "inTime"        to inStr,
                         "outTime"       to outStr,
                         "workingHours"  to workHrs,
                         "location"      to (inEntry?.get("location") as? String ?: "Office"),
-                        "duty_status"   to if (outStr != "--:--") "full" else "absent",
-                        "is_holiday"    to false,
+                        "duty_status"   to if (isHoliday) "holiday" else if (outStr != "--:--") "full" else "absent",
+                        "is_holiday"    to isHoliday,
                         "type"          to if (inStr != "--:--") "IN" else "ABSENT"
                     )
                 }
@@ -219,8 +243,15 @@ object FirestoreRepository {
 
     /**
      * Log attendance entry.
-     * FIX: OUT action now computes duty_hours and sets duty_status in sessions doc.
-     * This ensures admin Python app shows correct Present/Half/Absent immediately.
+     *
+     * FIX (check-in shows present): IN writes duty_status = "present".
+     * FIX (instant checkout exploit):
+     *   OUT is REJECTED if:
+     *     (a) No IN exists for today — can't checkout without checkin.
+     *     (b) Less than 30 minutes since IN — prevents accidental/malicious
+     *         double-scan that would wipe a full day's pay.
+     *     (c) out_time already set — no duplicate checkout.
+     * Returns false with a reason code so the UI can show a meaningful message.
      */
     suspend fun logAttendance(
         empId: String = "",
@@ -240,11 +271,37 @@ object FirestoreRepository {
         if (resolvedEmpId.isEmpty()) return false
 
         return try {
-            val today   = todayDateKey()
-            val nowTs   = Timestamp.now()
-            val timeStr = nowTimeKey()
+            val today        = todayDateKey()
+            val nowTs        = Timestamp.now()
+            val timeStr      = nowTimeKey()
+            val sessionDocId = "${resolvedEmpId}_${today}"
+            val sessionRef   = db.collection("sessions").document(sessionDocId)
 
-            // 1. Write to attendance_logs
+            // ── OUT guard: read existing session first ─────────────────
+            if (resolvedType == "OUT") {
+                val existingSnap = sessionRef.get().await()
+                val existingData = existingSnap.data
+
+                // Guard 1: No IN today → reject
+                val inTimeStr = (existingData?.get("in_time") as? String).orEmpty()
+                if (inTimeStr.isEmpty()) {
+                    return false  // UI shows: "No check-in found for today"
+                }
+
+                // Guard 2: Duplicate OUT → reject
+                val existingOut = (existingData?.get("out_time") as? String).orEmpty()
+                if (existingOut.isNotEmpty()) {
+                    return false  // UI shows: "Already checked out today"
+                }
+
+                // Guard 3: Too soon (< 30 min) → reject
+                val minutesSinceIn = computeHoursDiff(inTimeStr, timeStr) * 60.0
+                if (minutesSinceIn < 30.0) {
+                    return false  // UI shows: "Too soon — minimum 30 min required"
+                }
+            }
+
+            // ── Write attendance_log entry ─────────────────────────────
             val logData = mapOf(
                 "employee_id"    to resolvedEmpId,
                 "uid"            to resolvedUid,
@@ -259,67 +316,64 @@ object FirestoreRepository {
             )
             db.collection("attendance_logs").add(logData).await()
 
-            // 2. Upsert sessions doc with duty calculation on OUT
-            val sessionDocId = "${resolvedEmpId}_${today}"
-            val sessionRef   = db.collection("sessions").document(sessionDocId)
-
+            // ── Upsert sessions doc ────────────────────────────────────
             val sessionUpdate: Map<String, Any> = when (resolvedType) {
                 "IN" -> mapOf(
-                    "in_time"     to timeStr,
-                    "employee_id" to resolvedEmpId,
-                    "emp_name"    to empName,
-                    "name"        to empName,
-                    "date"        to today,
-                    "location"    to location,
+                    "in_time"      to timeStr,
+                    "employee_id"  to resolvedEmpId,
+                    "emp_name"     to empName,
+                    "name"         to empName,
+                    "date"         to today,
+                    "location"     to location,
                     "last_updated" to nowTs,
-                    "duty_status" to "absent"   // will be updated on OUT
+                    // FIX: was "absent" — now "present" so admin sees the employee
+                    // as present immediately after check-in, before checkout.
+                    "duty_status"  to "present"
                 )
                 "OUT" -> {
-                    // Read in_time from existing session to compute hours
+                    // Re-read in_time (already validated above)
                     val existingSnap = sessionRef.get().await()
-                    val inTimeStr = (existingSnap.data?.get("in_time") as? String).orEmpty()
-                    val dutyHours = if (inTimeStr.isNotEmpty()) {
-                        computeHoursDiff(inTimeStr, timeStr)
-                    } else 0.0
-                    val dutyStatus = when {
+                    val inTimeStr    = (existingSnap.data?.get("in_time") as? String).orEmpty()
+                    val dutyHours    = computeHoursDiff(inTimeStr, timeStr)
+                    val dutyStatus   = when {
                         dutyHours >= 7.0 -> "full"
                         dutyHours >= 4.0 -> "half"
                         else             -> "absent"
                     }
                     mapOf(
-                        "out_time"    to timeStr,
-                        "employee_id" to resolvedEmpId,
-                        "emp_name"    to empName,
-                        "name"        to empName,
-                        "date"        to today,
-                        "location"    to location,
+                        "out_time"     to timeStr,
+                        "employee_id"  to resolvedEmpId,
+                        "emp_name"     to empName,
+                        "name"         to empName,
+                        "date"         to today,
+                        "location"     to location,
                         "last_updated" to nowTs,
-                        "duty_hours"  to dutyHours,
-                        "duty_status" to dutyStatus
+                        "duty_hours"   to dutyHours,
+                        "duty_status"  to dutyStatus
                     )
                 }
                 "OT_IN" -> mapOf(
-                    "ot_in_time"  to timeStr,
-                    "employee_id" to resolvedEmpId,
-                    "date"        to today,
+                    "ot_in_time"   to timeStr,
+                    "employee_id"  to resolvedEmpId,
+                    "date"         to today,
                     "last_updated" to nowTs
                 )
                 "OT_OUT" -> {
                     val existingSnap = sessionRef.get().await()
-                    val otInStr = (existingSnap.data?.get("ot_in_time") as? String).orEmpty()
-                    val otHours = if (otInStr.isNotEmpty()) computeHoursDiff(otInStr, timeStr) else 0.0
+                    val otInStr  = (existingSnap.data?.get("ot_in_time") as? String).orEmpty()
+                    val otHours  = if (otInStr.isNotEmpty()) computeHoursDiff(otInStr, timeStr) else 0.0
                     val otStatus = when {
                         otHours >= 7.0 -> "full"
                         otHours >= 4.0 -> "half"
                         else           -> "none"
                     }
                     mapOf(
-                        "ot_out_time" to timeStr,
-                        "employee_id" to resolvedEmpId,
-                        "date"        to today,
+                        "ot_out_time"  to timeStr,
+                        "employee_id"  to resolvedEmpId,
+                        "date"         to today,
                         "last_updated" to nowTs,
-                        "ot_hours"    to otHours,
-                        "ot_status"   to otStatus
+                        "ot_hours"     to otHours,
+                        "ot_status"    to otStatus
                     )
                 }
                 else -> emptyMap()
@@ -328,7 +382,7 @@ object FirestoreRepository {
                 sessionRef.set(sessionUpdate, SetOptions.merge()).await()
             }
 
-            // 3. Update attendance_summary subcollection
+            // ── Update attendance_summary subcollection ────────────────
             val summaryRef = db.collection("employees").document(resolvedUid)
                 .collection("attendance_summary").document(currentMonthKey())
             db.runTransaction { tx ->

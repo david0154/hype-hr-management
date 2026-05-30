@@ -49,6 +49,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * FIX: Gate name = "<Real Company Name> Gate" loaded from Firestore via
  *      SecurityViewModel.loadCompanyName(). No more hardcoded "Company Gate".
  *
+ * FIX (instant checkout exploit): logAttendance() now rejects OUT if:
+ *   - No IN exists for today
+ *   - Less than 30 minutes since IN
+ *   - OUT already recorded today
+ *   UI shows a clear message explaining the rejection.
+ *
  * @author David | Nexuzy Lab
  */
 @OptIn(ExperimentalGetImage::class)
@@ -59,7 +65,6 @@ class SecurityScanActivity : AppCompatActivity() {
     private lateinit var vm: SecurityViewModel
     private lateinit var cameraExecutor: ExecutorService
 
-    // Set after Firestore resolves the company name
     private var companyGateName: String = "Gate"
 
     private val mlkitScanner by lazy {
@@ -122,7 +127,6 @@ class SecurityScanActivity : AppCompatActivity() {
             if (action == "IN") 0xFF388E3C.toInt() else 0xFFD32F2F.toInt()
         )
 
-        // Load real company name from Firestore, THEN start camera
         vm.loadCompanyName { name ->
             companyGateName = "$name Gate"
             Log.d(TAG, "Gate name resolved: $companyGateName")
@@ -283,7 +287,16 @@ class SecurityScanActivity : AppCompatActivity() {
                     Toast.makeText(this@SecurityScanActivity, msg, Toast.LENGTH_LONG).show()
                     binding.root.postDelayed({ finish() }, 2200L)
                 } else {
-                    binding.tvStatus.text = "❌ Save failed. Check Firestore rules."
+                    // Show specific reason for OUT rejection
+                    val errMsg = when (action) {
+                        "OUT" -> "⚠️ Cannot check out:\n" +
+                                 "• No check-in found today, OR\n" +
+                                 "• Already checked out today, OR\n" +
+                                 "• Must wait at least 30 min after check-in"
+                        else  -> "❌ Save failed. Check Firestore rules."
+                    }
+                    binding.tvStatus.text = errMsg
+                    Toast.makeText(this@SecurityScanActivity, errMsg, Toast.LENGTH_LONG).show()
                     processed.set(false)
                     startCamera()
                 }
