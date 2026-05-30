@@ -103,7 +103,8 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
     paid_sundays = _count_paid_sundays(employee["employee_id"], month, year, sessions_map)
     absent_days  = max(0, working_days - full_days - half_days * 0.5)
 
-    att_ratio  = (full_days + half_days * 0.5 + paid_sundays) / working_days if working_days else 0
+    # FIX: cap att_ratio at 1.0 — attendance salary must never exceed base salary
+    att_ratio  = min(1.0, (full_days + half_days * 0.5 + paid_sundays) / working_days) if working_days else 0
     att_salary = round(base_salary * att_ratio, 2)
 
     ot_units   = ot_full + ot_half * 0.5
@@ -155,8 +156,18 @@ def calculate_salary(employee, month_sessions, month, year, working_days=None):
 
 
 def _count_paid_sundays(employee_id, month, year, sessions_map):
-    """Sunday is paid only if Saturday present AND next Monday present (full pay)
-    or Saturday present but Monday absent (half pay)."""
+    """
+    Sunday is paid only if the surrounding Saturday AND Monday are both present.
+    Rules:
+      - Saturday present AND Monday present  → full Sunday paid (1.0)
+      - Saturday present BUT Monday absent   → half Sunday paid (0.5)
+      - Saturday absent                      → Sunday not paid (0.0)
+
+    FIX: When the last Sunday of the month has its Monday in the NEXT month
+    (e.g. May 25 Sun → June 1 Mon), the old code found mon_d = None and
+    fell into the 0.5 branch even when Monday was present. Now we
+    explicitly compute the next-month Monday date and check sessions_map.
+    """
     paid = 0.0
     cal  = calendar.monthcalendar(year, month)
     for week_idx, week in enumerate(cal):
@@ -164,13 +175,23 @@ def _count_paid_sundays(employee_id, month, year, sessions_map):
             continue
         sat_n = week[5]
         sat_d = date(year, month, sat_n) if sat_n != 0 else None
+
+        # ── FIX: resolve Monday even when it falls in the next month ──
         mon_d = None
         if week_idx + 1 < len(cal) and cal[week_idx + 1][0] != 0:
+            # Monday is within the same month
             mon_d = date(year, month, cal[week_idx + 1][0])
+        else:
+            # Last Sunday of the month — Monday is the 1st of next month
+            next_month = month % 12 + 1
+            next_year  = year + 1 if month == 12 else year
+            mon_d = date(next_year, next_month, 1)
+
         sat_ok = sat_d and sessions_map.get(
             sat_d.isoformat(), {}).get("duty_status") in ("full", "half")
         mon_ok = mon_d and sessions_map.get(
             mon_d.isoformat(), {}).get("duty_status") in ("full", "half")
+
         if sat_ok and mon_ok:       paid += 1.0
         elif sat_ok and not mon_ok: paid += 0.5
     return paid
