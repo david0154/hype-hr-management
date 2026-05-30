@@ -10,6 +10,9 @@ FIX: Employee lookup queries by employee_id field (not doc ID = UID).
 FIX: Live emp-ID lookup preview debounced — works for mark present/absent.
 FIX: Raw logs show IST time + parsed location name.
 FIX: Employee name resolved from multiple field names + live Firestore fallback.
+FIX: QR scan check-in/out — _sync_duty_from_times() recomputes duty_status
+     from in_time/out_time whenever a session is saved or refreshed.
+     Paid holidays: sessions flagged is_holiday=True count toward paid days.
 Developed by David | Nexuzy Lab | nexuzylab@gmail.com
 """
 import tkinter as tk
@@ -39,20 +42,20 @@ def _ff(col_ref, field, op, val):
 
 
 def classify_duty(hours: float) -> str:
-    if hours < 4:   return "Absent"
-    elif hours < 7: return "Half Day"
-    return "Full Day"
+    if hours < 4:   return "absent"
+    elif hours < 7: return "half"
+    return "full"
 
 
 def classify_ot(hours: float) -> str:
-    if hours < 4:   return "No OT"
-    elif hours < 7: return "Half OT"
-    return "Full OT"
+    if hours < 4:   return "none"
+    elif hours < 7: return "half"
+    return "full"
 
 
 def _to_ist_hhmm(ts_value) -> str:
     try:
-        if hasattr(ts_value, 'tzinfo') and ts_value.tzinfo:
+    	if hasattr(ts_value, 'tzinfo') and ts_value.tzinfo:
             return ts_value.astimezone(IST).strftime("%H:%M")
         if hasattr(ts_value, 'seconds'):
             return datetime.fromtimestamp(ts_value.seconds, tz=IST).strftime("%H:%M")
@@ -83,11 +86,6 @@ def _parse_location(loc_raw) -> str:
 
 
 def _extract_name_from_doc(data: dict) -> str:
-    """
-    Try every possible field name an employee record or session doc
-    might store the employee's display name under.
-    Covers Android app fields, web fields, and legacy fields.
-    """
     for field in (
         "name", "full_name", "employee_name", "employeeName",
         "displayName", "display_name", "emp_name",
@@ -99,15 +97,9 @@ def _extract_name_from_doc(data: dict) -> str:
 
 
 def _find_employee_by_id(db, emp_id: str):
-    """
-    Find employee by EMP-XXXX id.
-    Firestore doc key = Firebase Auth UID, so we must query by employee_id field.
-    Returns (uid, doc_dict) or (None, None).
-    """
     emp_id = emp_id.strip().upper()
     if not emp_id:
         return None, None
-    # Try direct doc lookup first (legacy: doc key == emp_id)
     try:
         direct = db.collection("employees").document(emp_id).get()
         if direct.exists:
@@ -116,7 +108,6 @@ def _find_employee_by_id(db, emp_id: str):
                 return d.get("uid", emp_id), d
     except Exception:
         pass
-    # Standard: doc key == UID, query by employee_id field
     try:
         results = list(_ff(db.collection("employees"), "employee_id", "==", emp_id).limit(1).stream())
         if results:
@@ -125,6 +116,80 @@ def _find_employee_by_id(db, emp_id: str):
     except Exception:
         pass
     return None, None
+
+
+def _hhmm_to_float(hhmm: str) -> float:
+    """Convert 'HH:MM' string to decimal hours. Returns 0.0 on error."""
+    try:
+        parts = hhmm.strip().split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+    except Exception:
+        return 0.0
+
+
+def _sync_duty_from_times(db, doc_id: str, session_data: dict) -> dict:
+    """
+    Recompute and write duty_status + duty_hours to a sessions doc
+    based on in_time and out_time fields.
+
+    Called after every QR-based IN/OUT write and after manual edits.
+    Also handles paid holidays: if is_holiday=True, duty_status is set
+    to 'full' regardless of hours so the employee gets paid for the holiday.
+
+    Returns the updated session_data dict.
+    """
+    in_t  = session_data.get("in_time",  "")
+    out_t = session_data.get("out_time", "")
+    is_holiday = session_data.get("is_holiday", False)
+
+    if is_holiday:
+        # Paid holiday — always mark as full day present
+        session_data["duty_status"] = "full"
+        session_data["duty_hours"]  = session_data.get("duty_hours", 8.0)
+        try:
+            db.collection("sessions").document(doc_id).update({
+                "duty_status": "full",
+            })
+        except Exception:
+            pass
+        return session_data
+
+    if in_t and out_t:
+        in_f  = _hhmm_to_float(str(in_t)[:5])
+        out_f = _hhmm_to_float(str(out_t)[:5])
+        hours = out_f - in_f
+        if hours < 0:
+            hours += 24  # overnight shift
+        duty = classify_duty(hours)
+        # OT hours (ot_in_time → ot_out_time)
+        ot_in  = session_data.get("ot_in_time",  "")
+        ot_out = session_data.get("ot_out_time", "")
+        ot_hours = 0.0
+        if ot_in and ot_out:
+            ot_hours = _hhmm_to_float(str(ot_out)[:5]) - _hhmm_to_float(str(ot_in)[:5])
+            if ot_hours < 0:
+                ot_hours += 24
+        ot_status = classify_ot(ot_hours)
+
+        session_data["duty_status"] = duty
+        session_data["duty_hours"]  = round(hours, 2)
+        session_data["ot_status"]   = ot_status
+        session_data["ot_hours"]    = round(ot_hours, 2)
+        try:
+            db.collection("sessions").document(doc_id).update({
+                "duty_status": duty,
+                "duty_hours":  round(hours, 2),
+                "ot_status":   ot_status,
+                "ot_hours":    round(ot_hours, 2),
+            })
+        except Exception:
+            pass
+    elif in_t and not out_t:
+        # Checked in but not yet checked out — keep as absent until OUT arrives
+        if not session_data.get("duty_status"):
+            session_data["duty_status"] = "absent"
+
+    return session_data
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -167,6 +232,11 @@ class AttendanceModule:
                   bg="#555", fg="white", font=("Arial", 9),
                   relief="flat", padx=8, pady=4,
                   command=self._load_logs).pack(side="right", padx=4)
+        # Sync button — re-run duty calc on all loaded sessions
+        tk.Button(top, text="\U0001f501 Sync Duty",
+                  bg="#7d3c98", fg="white", font=("Arial", 9),
+                  relief="flat", padx=8, pady=4,
+                  command=self._sync_all_duty).pack(side="right", padx=4)
 
         # ---- Filter bar ----
         ff = tk.Frame(self.parent, bg="#0d1b2a")
@@ -201,40 +271,26 @@ class AttendanceModule:
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=4)
         sb.pack(side="right", fill="y", pady=4)
 
-        self.tree.tag_configure("present", foreground="#00cc66")
-        self.tree.tag_configure("half",    foreground="#f0c040")
-        self.tree.tag_configure("absent",  foreground="#e74c3c")
+        self.tree.tag_configure("present",  foreground="#00cc66")
+        self.tree.tag_configure("half",     foreground="#f0c040")
+        self.tree.tag_configure("absent",   foreground="#e74c3c")
+        self.tree.tag_configure("holiday",  foreground="#3498db")
 
     # ──────────────────── NAME RESOLVER ───────────────────────────────────────
     def _resolve_name(self, emp_id: str, session_doc: dict) -> str:
-        """
-        Resolve employee display name for a session row.
-        Priority:
-          1. Name already in the session document (any known field)
-          2. In-memory cache (avoids repeated Firestore calls)
-          3. Live Firestore employees lookup by employee_id field
-          4. emp_id itself as last resort (never show blank)
-        """
-        # 1. Name stored directly in session doc
         name = _extract_name_from_doc(session_doc)
         if name:
             self._emp_name_cache[emp_id] = name
             return name
-
-        # 2. Cache
         cached = self._emp_name_cache.get(emp_id, "")
         if cached:
             return cached
-
-        # 3. Live Firestore lookup
         _, emp = _find_employee_by_id(self.db, emp_id)
         if emp:
             name = _extract_name_from_doc(emp)
             if name:
                 self._emp_name_cache[emp_id] = name
                 return name
-
-        # 4. Last resort — never show blank
         return emp_id
 
     # ───────────────────────────────────────────────────────────────── LOAD
@@ -263,19 +319,43 @@ class AttendanceModule:
         for doc in docs:
             d       = doc.to_dict()
             emp_id  = d.get("employee_id", "").strip().upper()
-            # Resolve name with multi-step fallback — never blank
             name    = self._resolve_name(emp_id, d)
             dt      = d.get("date", "")
-            duty    = d.get("duty_status", d.get("status", ""))
+            # FIX: recompute duty_status live if in_time + out_time present
+            # but duty_status is still 'absent' (QR scan wrote absent as default)
+            in_t_raw  = d.get("in_time",  "")
+            out_t_raw = d.get("out_time", "")
+            duty      = d.get("duty_status", d.get("status", ""))
+            if in_t_raw and out_t_raw and duty == "absent":
+                # Silently recompute without blocking the UI
+                in_f  = _hhmm_to_float(str(in_t_raw)[:5])
+                out_f = _hhmm_to_float(str(out_t_raw)[:5])
+                hours = out_f - in_f
+                if hours < 0: hours += 24
+                duty = classify_duty(hours)
+
+            is_holiday = d.get("is_holiday", False)
+            if is_holiday:
+                duty = "full"  # Paid holiday — always full
+
             ot      = d.get("ot_status", "")
             in_t    = _to_ist_hhmm(d.get("in_time", ""))  if d.get("in_time")  else "\u2014"
             out_t   = _to_ist_hhmm(d.get("out_time", "")) if d.get("out_time") else "\u2014"
             hours   = d.get("duty_hours", "")
             loc     = _parse_location(d.get("location", d.get("check_in_location", "")))
-            tag     = "present" if duty == "full" else ("half" if duty == "half" else "absent")
+
+            if is_holiday:
+                tag = "holiday"
+            elif duty == "full":
+                tag = "present"
+            elif duty == "half":
+                tag = "half"
+            else:
+                tag = "absent"
+
             self.tree.insert("", "end", values=(
                 emp_id, name, dt,
-                duty.title() if duty else "\u2014",
+                ("\U0001f389 Holiday" if is_holiday else duty.title()) if duty else "\u2014",
                 ot.title()   if ot   else "\u2014",
                 in_t, out_t,
                 f"{float(hours):.1f}h" if hours else "\u2014",
@@ -292,6 +372,28 @@ class AttendanceModule:
         self.filter_emp.set("")
         self.filter_date.set("")
         self._load_logs()
+
+    # ──────────────────── SYNC ALL DUTY ─────────────────────────────────────
+    def _sync_all_duty(self):
+        """Re-run _sync_duty_from_times on all currently displayed sessions."""
+        children = self.tree.get_children()
+        if not children:
+            messagebox.showinfo("Sync", "No sessions loaded. Load first."); return
+        synced = 0
+        for iid in children:
+            vals   = self.tree.item(iid)["values"]
+            doc_id = vals[9] if len(vals) > 9 else ""
+            if not doc_id: continue
+            try:
+                doc = self.db.collection("sessions").document(doc_id).get()
+                if doc.exists:
+                    d = doc.to_dict()
+                    _sync_duty_from_times(self.db, doc_id, d)
+                    synced += 1
+            except Exception:
+                pass
+        messagebox.showinfo("\u2705 Sync Done", f"Recomputed duty for {synced} sessions.")
+        self._apply_filter()
 
     # ────────────────────────────────────────────────────────── MARK PRESENT
     def _mark_present_dialog(self):
@@ -335,7 +437,6 @@ class AttendanceModule:
         ttk.Combobox(or2, textvariable=v_ot, values=OT_OPTIONS,
                      width=12, state="readonly").pack(side="left")
 
-        # Live name preview debounced
         name_lbl = tk.Label(frm, text="", bg="#0d1b2a", fg="#27ae60", font=("Arial", 9, "bold"))
         name_lbl.pack(anchor="w", pady=(4, 0))
         _lookup_job = [None]
@@ -377,16 +478,17 @@ class AttendanceModule:
                     f"No employee found with ID: {eid}", parent=dlg)
                 return
             emp_name = _extract_name_from_doc(emp)
+            # Auto-compute duty_hours and duty_status from times if provided
             duty_hours = 0.0
-            try:
-                if in_t and out_t:
-                    fmt  = "%H:%M"
-                    t_in  = datetime.strptime(in_t,  fmt)
-                    t_out = datetime.strptime(out_t, fmt)
-                    diff  = (t_out - t_in).seconds / 3600
-                    duty_hours = round(diff, 2)
-            except Exception:
-                pass
+            if in_t and out_t:
+                try:
+                    in_f  = _hhmm_to_float(in_t)
+                    out_f = _hhmm_to_float(out_t)
+                    duty_hours = out_f - in_f
+                    if duty_hours < 0: duty_hours += 24
+                    duty = classify_duty(duty_hours)  # auto-set from hours
+                except Exception:
+                    pass
 
             doc_id = f"{eid}_{dt}"
             session_data = {
@@ -398,7 +500,7 @@ class AttendanceModule:
                 "ot_status":     ot,
                 "in_time":       in_t,
                 "out_time":      out_t,
-                "duty_hours":    duty_hours,
+                "duty_hours":    round(duty_hours, 2),
                 "marked_by":     self.current_user.get("employee_id", "admin"),
                 "marked_at":     datetime.now(IST).isoformat(),
                 "source":        "manual",
@@ -517,6 +619,9 @@ class AttendanceModule:
         dt     = vals[2]
         duty   = vals[3].lower() if vals[3] else "absent"
         ot     = vals[4].lower() if vals[4] else "none"
+        # Strip emoji if present
+        for s in DUTY_OPTIONS:
+            if s in duty: duty = s; break
 
         dlg = tk.Toplevel(self.parent)
         dlg.title(f"\u270f\ufe0f Edit Session \u2014 {emp_id} / {dt}")

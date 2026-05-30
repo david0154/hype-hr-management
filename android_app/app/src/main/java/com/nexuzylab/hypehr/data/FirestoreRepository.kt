@@ -11,13 +11,14 @@ import java.util.*
 /**
  * FirestoreRepository — single source of truth for all Firestore operations.
  *
- * FIX (Security scan): logAttendance now accepts scannedBy + scannedByUid and
- *   writes to BOTH attendance_logs AND sessions collections so:
- *    - admin Python app (reads `sessions`) sees the QR-scanned attendance
- *    - attendance history screen (reads both) shows it correctly
+ * FIX (QR check-in not showing as present):
+ *   logAttendance() OUT now computes duty_hours from in_time→out_time difference
+ *   and writes duty_status (full/half/absent) to sessions doc immediately.
+ *   This makes the admin Python app see correct attendance without manual recalc.
  *
- * FIX (getEmployeeByUid): also tries admin_users collection so security/supervisor
- *   users (stored in admin_users by Python app) are found correctly.
+ * FIX (Android working hours blank):
+ *   getAttendanceHistory() now returns one DayRecord per date (not separate
+ *   IN/OUT entries), with inTime, outTime, workingHours all populated.
  *
  * Developed by David | Nexuzy Lab
  */
@@ -31,17 +32,14 @@ object FirestoreRepository {
     suspend fun getEmployeeByUid(uid: String): Map<String, Any>? {
         if (uid.isEmpty()) return null
         return try {
-            // 1. Direct employees doc by uid
             val direct = db.collection("employees").document(uid).get().await()
             if (direct.exists()) return direct.data
 
-            // 2. Query employees where uid field matches
             val snap = db.collection("employees")
                 .whereEqualTo("uid", uid)
                 .limit(1).get().await()
             if (!snap.isEmpty) return snap.documents.first().data
 
-            // 3. FIX: also check admin_users (security/supervisor stored there)
             val adminDirect = db.collection("admin_users").document(uid).get().await()
             if (adminDirect.exists()) return adminDirect.data
 
@@ -72,11 +70,15 @@ object FirestoreRepository {
 
             if (!snap.isEmpty) {
                 val sess = snap.documents.first().data ?: return "NONE"
-                return when ((sess["duty_status"] as? String)?.lowercase()) {
-                    "full" -> "COMPLETE"
-                    "half" -> "IN"
-                    null   -> if ((sess["in_time"] as? String).isNullOrEmpty()) "NONE" else "IN"
-                    else   -> "IN"
+                val inTime  = (sess["in_time"]  as? String).orEmpty()
+                val outTime = (sess["out_time"] as? String).orEmpty()
+                val otIn    = (sess["ot_in_time"]  as? String).orEmpty()
+                val otOut   = (sess["ot_out_time"] as? String).orEmpty()
+                return when {
+                    otIn.isNotEmpty() && otOut.isEmpty()  -> "OT_IN"
+                    outTime.isNotEmpty()                  -> "COMPLETE"
+                    inTime.isNotEmpty()                   -> "IN"
+                    else                                  -> "NONE"
                 }
             }
 
@@ -93,15 +95,17 @@ object FirestoreRepository {
             if (logs.isEmpty()) return "NONE"
             var lastAction = ""
             for (log in logs) {
-                val action = ((log["action"] ?: log["type"]) as? String)?.uppercase()?.trim() ?: continue
-                when (action) {
-                    "IN", "OUT", "OT_IN", "OT_OUT" -> lastAction = action
+                val act = ((log["action"] ?: log["type"]) as? String)?.uppercase()?.trim() ?: continue
+                when (act) {
+                    "IN", "OUT", "OT_IN", "OT_OUT" -> lastAction = act
                 }
             }
             when (lastAction) {
-                "IN" -> "IN"; "OUT" -> "COMPLETE"
-                "OT_IN" -> "OT_IN"; "OT_OUT" -> "COMPLETE"
-                else -> "NONE"
+                "IN"     -> "IN"
+                "OUT"    -> "COMPLETE"
+                "OT_IN"  -> "OT_IN"
+                "OT_OUT" -> "COMPLETE"
+                else     -> "NONE"
             }
         } catch (e: Exception) { "NONE" }
     }
@@ -119,58 +123,104 @@ object FirestoreRepository {
         } catch (e: Exception) { null }
     }
 
+    /**
+     * Returns one DayRecord map per date containing:
+     *   date, inTime, outTime, workingHours ("Xh Ym"), location, duty_status, is_holiday
+     * This replaces the old flat IN/OUT-per-row list so
+     * AttendanceHistoryActivity can show complete day info in one row.
+     */
     suspend fun getAttendanceHistory(
         employeeId: String,
         monthKey: String = currentMonthKey()
     ): List<Map<String, Any>> {
         if (employeeId.isEmpty()) return emptyList()
 
-        val sessionResults = try {
+        // Prefer sessions collection (one doc per day, has in_time + out_time)
+        return try {
             val snap = db.collection("sessions")
                 .whereEqualTo("employee_id", employeeId)
                 .get().await()
-            snap.documents.mapNotNull { it.data }
-                .filter { doc -> (doc["date"] as? String ?: "").startsWith(monthKey) }
-                .flatMap { sess ->
-                    val date    = sess["date"] as? String ?: ""
-                    val inTime  = sess["in_time"] as? String
-                    val outTime = sess["out_time"] as? String
-                    val loc     = sess["location"] as? String ?: "Office"
-                    val empName = sess["emp_name"] as? String ?: ""
-                    buildList {
-                        if (!inTime.isNullOrEmpty()) add(mapOf(
-                            "employee_id" to employeeId, "date" to date,
-                            "type" to "IN", "action" to "IN",
-                            "location" to loc, "emp_name" to empName,
-                            "timestamp" to timeStringToTimestamp(date, inTime)
-                        ))
-                        if (!outTime.isNullOrEmpty()) add(mapOf(
-                            "employee_id" to employeeId, "date" to date,
-                            "type" to "OUT", "action" to "OUT",
-                            "location" to loc, "emp_name" to empName,
-                            "timestamp" to timeStringToTimestamp(date, outTime)
-                        ))
+
+            val dayRecords = snap.documents
+                .mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    val date = (d["date"] as? String) ?: return@mapNotNull null
+                    if (!date.startsWith(monthKey)) return@mapNotNull null
+
+                    val inTime   = (d["in_time"]  as? String).orEmpty()
+                    val outTime  = (d["out_time"] as? String).orEmpty()
+                    val dutyHrs  = (d["duty_hours"] as? Number)?.toDouble() ?: 0.0
+                    val workHrs  = when {
+                        dutyHrs > 0 -> {
+                            val h = dutyHrs.toInt()
+                            val m = ((dutyHrs - h) * 60).toInt()
+                            if (m > 0) "${h}h ${m}m" else "${h}h"
+                        }
+                        inTime.isNotEmpty() && outTime.isNotEmpty() -> {
+                            calcWorkHours(inTime, outTime)
+                        }
+                        else -> "--"
                     }
+                    val duty     = (d["duty_status"] as? String) ?: "absent"
+                    val isHoliday = (d["is_holiday"] as? Boolean) ?: false
+                    mapOf(
+                        "date"          to date,
+                        "inTime"        to inTime,
+                        "outTime"       to outTime,
+                        "workingHours"  to workHrs,
+                        "location"      to ((d["location"] as? String) ?: "Office"),
+                        "duty_status"   to duty,
+                        "is_holiday"    to isHoliday,
+                        "type"          to if (inTime.isNotEmpty()) "IN" else "ABSENT"
+                    )
                 }
-                .sortedByDescending { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
-        } catch (e: Exception) { emptyList() }
+                .sortedByDescending { it["date"] as? String ?: "" }
 
-        if (sessionResults.isNotEmpty()) return sessionResults
+            if (dayRecords.isNotEmpty()) return dayRecords
 
-        return try {
-            val snap = db.collection("attendance_logs")
+            // Fallback: attendance_logs (group by date)
+            val snap2 = db.collection("attendance_logs")
                 .whereEqualTo("employee_id", employeeId)
                 .get().await()
-            snap.documents.mapNotNull { it.data }
-                .filter { doc -> (doc["date"] as? String ?: "").startsWith(monthKey) }
-                .sortedByDescending { (it["timestamp"] as? Timestamp)?.seconds ?: 0L }
+
+            val grouped = snap2.documents
+                .mapNotNull { it.data }
+                .filter { (it["date"] as? String ?: "").startsWith(monthKey) }
+                .groupBy { it["date"] as? String ?: "" }
+
+            grouped.entries
+                .sortedByDescending { it.key }
+                .map { (date, entries) ->
+                    val inEntry  = entries.firstOrNull { (it["type"] as? String)?.uppercase() == "IN" }
+                    val outEntry = entries.firstOrNull { (it["type"] as? String)?.uppercase() == "OUT" }
+                    val inTs     = inEntry?.get("timestamp")  as? Timestamp
+                    val outTs    = outEntry?.get("timestamp") as? Timestamp
+                    val inStr    = inTs?.let  { tsToHHMM(it) } ?: "--:--"
+                    val outStr   = outTs?.let { tsToHHMM(it) } ?: "--:--"
+                    val workHrs  = if (inTs != null && outTs != null) {
+                        val diffMs = outTs.toDate().time - inTs.toDate().time
+                        val h = (diffMs / 3600000).toInt()
+                        val m = ((diffMs % 3600000) / 60000).toInt()
+                        if (m > 0) "${h}h ${m}m" else "${h}h"
+                    } else "--"
+                    mapOf(
+                        "date"          to date,
+                        "inTime"        to inStr,
+                        "outTime"       to outStr,
+                        "workingHours"  to workHrs,
+                        "location"      to (inEntry?.get("location") as? String ?: "Office"),
+                        "duty_status"   to if (outStr != "--:--") "full" else "absent",
+                        "is_holiday"    to false,
+                        "type"          to if (inStr != "--:--") "IN" else "ABSENT"
+                    )
+                }
         } catch (e: Exception) { emptyList() }
     }
 
     /**
      * Log attendance entry.
-     * FIX: now also writes a `sessions` doc (upsert by employee_id+date) so admin
-     * Python app sees QR-scanned attendance immediately.
+     * FIX: OUT action now computes duty_hours and sets duty_status in sessions doc.
+     * This ensures admin Python app shows correct Present/Half/Absent immediately.
      */
     suspend fun logAttendance(
         empId: String = "",
@@ -194,38 +244,85 @@ object FirestoreRepository {
             val nowTs   = Timestamp.now()
             val timeStr = nowTimeKey()
 
-            // 1. Write to attendance_logs (used by history adapter + fallback)
+            // 1. Write to attendance_logs
             val logData = mapOf(
-                "employee_id" to resolvedEmpId,
-                "uid"         to resolvedUid,
-                "scanned_by"  to resolvedScannedBy,
+                "employee_id"    to resolvedEmpId,
+                "uid"            to resolvedUid,
+                "scanned_by"     to resolvedScannedBy,
                 "scanned_by_uid" to scannedByUid,
-                "type"        to resolvedType,
-                "action"      to resolvedType,
-                "location"    to location,
-                "emp_name"    to empName,
-                "date"        to today,
-                "timestamp"   to nowTs
+                "type"           to resolvedType,
+                "action"         to resolvedType,
+                "location"       to location,
+                "emp_name"       to empName,
+                "date"           to today,
+                "timestamp"      to nowTs
             )
             db.collection("attendance_logs").add(logData).await()
 
-            // 2. FIX: Upsert sessions doc (used by admin Python app)
-            //    sessions/{employee_id}_{date} — merge IN/OUT time fields
+            // 2. Upsert sessions doc with duty calculation on OUT
             val sessionDocId = "${resolvedEmpId}_${today}"
             val sessionRef   = db.collection("sessions").document(sessionDocId)
-            val sessionUpdate = when (resolvedType) {
-                "IN"     -> mapOf("in_time"  to timeStr, "employee_id" to resolvedEmpId,
-                                   "emp_name" to empName, "date" to today,
-                                   "location" to location, "last_updated" to nowTs)
-                "OUT"    -> mapOf("out_time" to timeStr, "employee_id" to resolvedEmpId,
-                                   "emp_name" to empName, "date" to today,
-                                   "location" to location, "last_updated" to nowTs,
-                                   "duty_status" to "full")
-                "OT_IN"  -> mapOf("ot_in_time"  to timeStr, "employee_id" to resolvedEmpId,
-                                   "date" to today, "last_updated" to nowTs)
-                "OT_OUT" -> mapOf("ot_out_time" to timeStr, "employee_id" to resolvedEmpId,
-                                   "date" to today, "last_updated" to nowTs)
-                else     -> emptyMap()
+
+            val sessionUpdate: Map<String, Any> = when (resolvedType) {
+                "IN" -> mapOf(
+                    "in_time"     to timeStr,
+                    "employee_id" to resolvedEmpId,
+                    "emp_name"    to empName,
+                    "name"        to empName,
+                    "date"        to today,
+                    "location"    to location,
+                    "last_updated" to nowTs,
+                    "duty_status" to "absent"   // will be updated on OUT
+                )
+                "OUT" -> {
+                    // Read in_time from existing session to compute hours
+                    val existingSnap = sessionRef.get().await()
+                    val inTimeStr = (existingSnap.data?.get("in_time") as? String).orEmpty()
+                    val dutyHours = if (inTimeStr.isNotEmpty()) {
+                        computeHoursDiff(inTimeStr, timeStr)
+                    } else 0.0
+                    val dutyStatus = when {
+                        dutyHours >= 7.0 -> "full"
+                        dutyHours >= 4.0 -> "half"
+                        else             -> "absent"
+                    }
+                    mapOf(
+                        "out_time"    to timeStr,
+                        "employee_id" to resolvedEmpId,
+                        "emp_name"    to empName,
+                        "name"        to empName,
+                        "date"        to today,
+                        "location"    to location,
+                        "last_updated" to nowTs,
+                        "duty_hours"  to dutyHours,
+                        "duty_status" to dutyStatus
+                    )
+                }
+                "OT_IN" -> mapOf(
+                    "ot_in_time"  to timeStr,
+                    "employee_id" to resolvedEmpId,
+                    "date"        to today,
+                    "last_updated" to nowTs
+                )
+                "OT_OUT" -> {
+                    val existingSnap = sessionRef.get().await()
+                    val otInStr = (existingSnap.data?.get("ot_in_time") as? String).orEmpty()
+                    val otHours = if (otInStr.isNotEmpty()) computeHoursDiff(otInStr, timeStr) else 0.0
+                    val otStatus = when {
+                        otHours >= 7.0 -> "full"
+                        otHours >= 4.0 -> "half"
+                        else           -> "none"
+                    }
+                    mapOf(
+                        "ot_out_time" to timeStr,
+                        "employee_id" to resolvedEmpId,
+                        "date"        to today,
+                        "last_updated" to nowTs,
+                        "ot_hours"    to otHours,
+                        "ot_status"   to otStatus
+                    )
+                }
+                else -> emptyMap()
             }
             if (sessionUpdate.isNotEmpty()) {
                 sessionRef.set(sessionUpdate, SetOptions.merge()).await()
@@ -329,11 +426,34 @@ object FirestoreRepository {
         return sdf.format(Date())
     }
 
-    private fun timeStringToTimestamp(date: String, time: String): Timestamp {
+    private fun tsToHHMM(ts: Timestamp): String {
+        val sdf = SimpleDateFormat("hh:mm a", Locale.ENGLISH); sdf.timeZone = IST
+        return sdf.format(ts.toDate())
+    }
+
+    /**
+     * Compute decimal hours between two HH:mm strings (same day).
+     * Returns 0.0 if either is empty or unparseable.
+     */
+    private fun computeHoursDiff(startHHMM: String, endHHMM: String): Double {
         return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ENGLISH); sdf.timeZone = IST
-            val d = sdf.parse("$date ${time.take(5)}") ?: return Timestamp.now()
-            Timestamp(d)
-        } catch (e: Exception) { Timestamp.now() }
+            val sdf = SimpleDateFormat("HH:mm", Locale.ENGLISH)
+            val s = sdf.parse(startHHMM) ?: return 0.0
+            val e = sdf.parse(endHHMM)   ?: return 0.0
+            val diffMs = e.time - s.time
+            if (diffMs < 0) 0.0 else diffMs / 3_600_000.0
+        } catch (ex: Exception) { 0.0 }
+    }
+
+    /**
+     * Compute working hours string from two HH:mm strings.
+     * Returns "Xh Ym" or "--" on error.
+     */
+    private fun calcWorkHours(inTime: String, outTime: String): String {
+        val diff = computeHoursDiff(inTime, outTime)
+        if (diff <= 0) return "--"
+        val h = diff.toInt()
+        val m = ((diff - h) * 60).toInt()
+        return if (m > 0) "${h}h ${m}m" else "${h}h"
     }
 }
