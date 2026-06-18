@@ -4,5 +4,5 @@ qrcode[pil]==7.4.2
 Pillow==10.3.0
 python-dateutil==2.9.0
 pyinstaller==6.8.0
-cryptography==42.0.7
+cryptography==48.0.1
 requests==2.32.3
